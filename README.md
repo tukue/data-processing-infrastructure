@@ -33,14 +33,18 @@ flowchart LR
 
 ## Design Decisions
 
-- One CDK stack keeps the assignment easy to review and avoids unnecessary module structure.
-- S3 buckets block public access, enforce SSL, use bucket-owner-enforced object ownership, versioning, and customer-managed KMS encryption.
-- Raw uploads expire after 7 days because the canonical result should live in the processed output and main database.
-- EventBridge notifications are enabled on the raw bucket so object creation can start the workflow without Lambda glue code.
-- Step Functions uses `ecs:runTask.sync`, which is a good fit for 5-10 minute file processing jobs and gives workflow-level retry/failure handling.
-- Fargate CPU and memory are set to `1024` CPU units and `2048` MiB for a demo-sized task. Real sizing should be based on processor profiling and CSV memory behavior.
-- Fargate tasks run in private subnets with no public IP. A NAT gateway is included for the placeholder public image and external API access.
-- The stack uses the account and region from the active AWS CLI/CDK environment instead of hardcoding an account ID.
+The implementation is intentionally small enough for a take-home assignment, but the resource choices are meant to show production-oriented judgment.
+
+- **Single stack:** One CDK stack keeps the infrastructure easy to review. The app avoids premature module boundaries while still separating deployment configuration into a small helper for testability.
+- **Event-driven orchestration:** S3 Object Created events flow through EventBridge directly into Step Functions. This avoids Lambda glue code and keeps retry/failure behavior visible in the workflow.
+- **Fargate for long-running work:** Processing takes 5-10 minutes, which is too long for a simple synchronous request path. A one-off Fargate task fits a black-box container processor without requiring a continuously running ECS service.
+- **Step Functions native ECS integration:** The workflow uses the native `ecs:runTask.sync` integration so Step Functions waits for task completion and can apply workflow-level retry and catch handling.
+- **Private task networking:** Fargate tasks run in private subnets with no public IP. A NAT gateway is included so the placeholder public image and future external enrichment API can be reached over HTTPS.
+- **Data protection by default:** S3 buckets block public access, enforce SSL, use bucket-owner-enforced object ownership, versioning, and customer-managed KMS encryption.
+- **Raw data retention:** Raw uploads expire after a configurable retention period. The default is 7 days because the durable outputs should be the processed bucket and main database, not indefinite raw PII storage.
+- **Least-privilege task role:** The task role can read raw inputs, write processed/failed outputs, and read only the two required secrets.
+- **Portable deployment:** Account, region, and raw retention are configurable through environment variables or CDK context so the same code can deploy to another AWS account or region without source edits.
+- **Placeholder processor:** The BusyBox container only demonstrates orchestration. In production, this would be replaced by a pinned private ECR image with scanning and release controls.
 
 ## Security Considerations
 
