@@ -1,0 +1,21 @@
+# TypeScript build output
+*.js
+!jest.config.js
+*.d.ts
+
+# Dependencies
+node_modules/
+
+# CDK asset staging directory
+.cdk.staging/
+cdk.out/
+cdk.out.*/
+
+# Test and coverage output
+coverage/
+
+# Local environment and logs
+.env
+.env.*
+*.log
+npm-debug.log*
