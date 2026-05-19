@@ -76,6 +76,16 @@ The implementation is intentionally small enough for a take-home assignment, but
 - Multipart upload initiation and presigned URL generation are intentionally outside this stack because the assignment does not include an upload API. A real product would add an authenticated API for creating multipart upload sessions.
 - Macie is enabled, but this stack does not create custom managed data identifiers or a full alerting workflow. In production, Macie findings would usually route to Security Hub, SNS, Slack/PagerDuty, or a ticketing workflow.
 
+## Intentionally Not Included
+
+- CSV parsing, PII scrubbing, enrichment logic, or database writes inside the processor application.
+- Upload API, authentication flow, or presigned multipart upload URL generation.
+- Main database, schema migrations, RDS proxy, or data access layer.
+- Job metadata table for user-facing progress and idempotency.
+- Production alerting, dashboards, runbooks, or incident response automation.
+- Multi-account deployment pipeline or automated production deployment.
+- Full compliance controls such as data subject deletion workflows, legal hold, or centralized audit retention.
+
 ## Future Improvements
 
 - Replace the BusyBox image with the real processor image in ECR.
