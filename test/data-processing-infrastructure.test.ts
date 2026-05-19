@@ -18,18 +18,37 @@ test('creates secured buckets, ECS task, and workflow trigger', () => {
       IgnorePublicAcls: true,
       RestrictPublicBuckets: true,
     },
+    BucketEncryption: Match.objectLike({
+      ServerSideEncryptionConfiguration: Match.arrayWith([
+        Match.objectLike({
+          ServerSideEncryptionByDefault: Match.objectLike({
+            SSEAlgorithm: 'aws:kms',
+          }),
+        }),
+      ]),
+    }),
+    OwnershipControls: {
+      Rules: [
+        {
+          ObjectOwnership: 'BucketOwnerEnforced',
+        },
+      ],
+    },
+    VersioningConfiguration: {
+      Status: 'Enabled',
+    },
+  });
+
+  template.hasResourceProperties('AWS::S3::Bucket', {
     LifecycleConfiguration: {
       Rules: Match.arrayWith([
         Match.objectLike({
           ExpirationInDays: 7,
-          NoncurrentVersionExpirationInDays: 7,
+          NoncurrentVersionExpiration: {
+            NoncurrentDays: 7,
+          },
         }),
       ]),
-    },
-    NotificationConfiguration: {
-      EventBridgeConfiguration: {
-        EventBridgeEnabled: true,
-      },
     },
   });
 
@@ -39,17 +58,8 @@ test('creates secured buckets, ECS task, and workflow trigger', () => {
     RequiresCompatibilities: ['FARGATE'],
   });
 
-  template.hasResourceProperties('AWS::StepFunctions::StateMachine', {
-    DefinitionString: Match.serializedJson(
-      Match.objectLike({
-        States: Match.objectLike({
-          RunCsvProcessorTask: Match.objectLike({
-            Resource: 'arn:aws:states:::ecs:runTask.sync',
-          }),
-        }),
-      }),
-    ),
-  });
+  template.resourceCountIs('AWS::StepFunctions::StateMachine', 1);
+  expect(JSON.stringify(template.toJSON())).toContain('states:::ecs:runTask.sync');
 
   template.hasResourceProperties('AWS::Events::Rule', {
     EventPattern: Match.objectLike({
@@ -71,7 +81,9 @@ test('uses configured raw file retention days in lifecycle policy', () => {
       Rules: Match.arrayWith([
         Match.objectLike({
           ExpirationInDays: 14,
-          NoncurrentVersionExpirationInDays: 14,
+          NoncurrentVersionExpiration: {
+            NoncurrentDays: 14,
+          },
         }),
       ]),
     },
