@@ -5,6 +5,7 @@ import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as kms from 'aws-cdk-lib/aws-kms';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import * as macie from 'aws-cdk-lib/aws-macie';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as sfn from 'aws-cdk-lib/aws-stepfunctions';
@@ -37,6 +38,7 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.RETAIN,
       lifecycleRules: [
         {
+          abortIncompleteMultipartUploadAfter: cdk.Duration.days(1),
           expiration: cdk.Duration.days(props.rawFileRetentionDays),
           noncurrentVersionExpiration: cdk.Duration.days(props.rawFileRetentionDays),
         },
@@ -143,6 +145,27 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
       retention: logs.RetentionDays.ONE_MONTH,
       removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
+
+    const macieSession = new macie.CfnSession(this, 'MacieSession', {
+      findingPublishingFrequency: 'FIFTEEN_MINUTES',
+      status: 'ENABLED',
+    });
+
+    const macieFindingsLogGroup = new logs.LogGroup(this, 'MacieFindingsLogGroup', {
+      encryptionKey: dataKey,
+      retention: logs.RetentionDays.ONE_MONTH,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    const macieFindingsRule = new events.Rule(this, 'MacieFindingsRule', {
+      description: 'Capture Amazon Macie findings for PII and S3 data security review.',
+      eventPattern: {
+        source: ['aws.macie'],
+        detailType: ['Macie Finding'],
+      },
+      targets: [new targets.CloudWatchLogGroup(macieFindingsLogGroup)],
+    });
+    macieFindingsRule.node.addDependency(macieSession);
 
     const taskDefinition = new ecs.FargateTaskDefinition(this, 'ProcessorTaskDefinition', {
       cpu: 1024,

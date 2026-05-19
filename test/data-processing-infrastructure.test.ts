@@ -43,6 +43,9 @@ test('creates secured buckets, ECS task, and workflow trigger', () => {
     LifecycleConfiguration: {
       Rules: Match.arrayWith([
         Match.objectLike({
+          AbortIncompleteMultipartUpload: {
+            DaysAfterInitiation: 1,
+          },
           ExpirationInDays: 7,
           NoncurrentVersionExpiration: {
             NoncurrentDays: 7,
@@ -67,6 +70,18 @@ test('creates secured buckets, ECS task, and workflow trigger', () => {
       'detail-type': ['Object Created'],
     }),
   });
+
+  template.hasResourceProperties('AWS::Macie::Session', {
+    FindingPublishingFrequency: 'FIFTEEN_MINUTES',
+    Status: 'ENABLED',
+  });
+
+  template.hasResourceProperties('AWS::Events::Rule', {
+    EventPattern: Match.objectLike({
+      source: ['aws.macie'],
+      'detail-type': ['Macie Finding'],
+    }),
+  });
 });
 
 test('uses configured raw file retention days in lifecycle policy', () => {
@@ -80,6 +95,9 @@ test('uses configured raw file retention days in lifecycle policy', () => {
     LifecycleConfiguration: {
       Rules: Match.arrayWith([
         Match.objectLike({
+          AbortIncompleteMultipartUpload: {
+            DaysAfterInitiation: 1,
+          },
           ExpirationInDays: 14,
           NoncurrentVersionExpiration: {
             NoncurrentDays: 14,

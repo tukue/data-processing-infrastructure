@@ -18,18 +18,22 @@ flowchart LR
     ecs --> secrets[Secrets Manager]
     ecs --> logs[CloudWatch Logs]
     ecs --> kms[KMS key]
+    macie[Amazon Macie] --> logs
+    macie --> raw
+    macie --> failed
     ecs -. status update hook .-> db[(Main database)]
 ```
 
 ## Flow
 
 1. A CSV file is uploaded to the raw uploads bucket.
-2. The raw bucket emits S3 Object Created events to EventBridge.
-3. EventBridge starts the Step Functions state machine with the original S3 event payload.
-4. Step Functions runs a Fargate task using the native ECS integration.
-5. The workflow passes `JOB_ID`, `RAW_BUCKET`, and `OBJECT_KEY` to the container as environment overrides.
-6. The task reads the raw object, writes successful output to the processed bucket, and writes failed artifacts to the failed bucket.
-7. Placeholder Step Functions `Pass` states mark where job status updates to a database or job table would happen.
+2. Large uploads should use S3 multipart upload, preferably through the AWS SDK or presigned multipart upload URLs.
+3. The raw bucket emits S3 Object Created events to EventBridge after the object is completed.
+4. EventBridge starts the Step Functions state machine with the original S3 event payload.
+5. Step Functions runs a Fargate task using the native ECS integration.
+6. The workflow passes `JOB_ID`, `RAW_BUCKET`, and `OBJECT_KEY` to the container as environment overrides.
+7. The task reads the raw object, writes successful output to the processed bucket, and writes failed artifacts to the failed bucket.
+8. Placeholder Step Functions `Pass` states mark where job status updates to a database or job table would happen.
 
 ## Design Decisions
 
@@ -41,6 +45,8 @@ The implementation is intentionally small enough for a take-home assignment, but
 - **Step Functions native ECS integration:** The workflow uses the native `ecs:runTask.sync` integration so Step Functions waits for task completion and can apply workflow-level retry and catch handling.
 - **Private task networking:** Fargate tasks run in private subnets with no public IP. A NAT gateway is included so the placeholder public image and future external enrichment API can be reached over HTTPS.
 - **Data protection by default:** S3 buckets block public access, enforce SSL, use bucket-owner-enforced object ownership, versioning, and customer-managed KMS encryption.
+- **Multipart uploads for large files:** The raw bucket is intended to receive large CSV files through S3 multipart upload. This improves reliability for multi-GB files and lets clients retry individual parts instead of restarting the whole upload.
+- **PII visibility with Macie:** Amazon Macie is enabled for the account/region and Macie findings are captured through EventBridge into an encrypted CloudWatch log group for review.
 - **Raw data retention:** Raw uploads expire after a configurable retention period. The default is 7 days because the durable outputs should be the processed bucket and main database, not indefinite raw PII storage.
 - **Least-privilege task role:** The task role can read raw inputs, write processed/failed outputs, and read only the two required secrets.
 - **Portable deployment:** Account, region, and raw retention are configurable through environment variables or CDK context so the same code can deploy to another AWS account or region without source edits.
@@ -51,6 +57,8 @@ The implementation is intentionally small enough for a take-home assignment, but
 - Public S3 access is blocked on all buckets.
 - Buckets enforce TLS using `enforceSSL`.
 - S3, Secrets Manager, and CloudWatch Logs use a customer-managed KMS key with key rotation enabled.
+- Amazon Macie is enabled to support sensitive data discovery and S3 data security findings.
+- Macie findings are routed to CloudWatch Logs through EventBridge so findings are visible without adding another notification service to the demo.
 - ECS tasks run in private subnets and use a security group that allows DNS plus outbound HTTPS only.
 - The placeholder container runs as a non-root user with a read-only root filesystem.
 - The ECS task role is granted read access only to the raw bucket, write access only to the processed and failed buckets, and read access only to the two placeholder secrets.
@@ -65,12 +73,15 @@ The implementation is intentionally small enough for a take-home assignment, but
 - The placeholder processor command only logs and sleeps. It demonstrates orchestration without pretending to scrub or enrich CSV data.
 - A NAT gateway improves the private-subnet posture but adds cost. A production version could reduce NAT dependency with VPC endpoints and a private ECR image.
 - Fargate is simpler than a persistent ECS service or AWS Batch for this assignment. AWS Batch could be attractive for heavier scheduling, queues, or very high concurrency.
+- Multipart upload initiation and presigned URL generation are intentionally outside this stack because the assignment does not include an upload API. A real product would add an authenticated API for creating multipart upload sessions.
+- Macie is enabled, but this stack does not create custom managed data identifiers or a full alerting workflow. In production, Macie findings would usually route to Security Hub, SNS, Slack/PagerDuty, or a ticketing workflow.
 
 ## Future Improvements
 
 - Replace the BusyBox image with the real processor image in ECR.
 - Add a job metadata table for idempotency, status tracking, retry visibility, and user-facing progress.
 - Add dead-letter handling or operational alerts for failed workflow executions.
+- Add Macie custom data identifiers for domain-specific customer identifiers if the default managed identifiers are not enough.
 - Add interface VPC endpoints for Secrets Manager, CloudWatch Logs, ECR, and Step Functions where they fit the target region and cost profile.
 - Add reserved concurrency controls or EventBridge/SQS buffering if many large files can arrive at once.
 - Add integration tests that assert the synthesized IAM policy scope and Step Functions input paths.
