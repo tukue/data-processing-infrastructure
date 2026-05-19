@@ -3,6 +3,7 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
+import * as kms from 'aws-cdk-lib/aws-kms';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
@@ -10,36 +11,64 @@ import * as sfn from 'aws-cdk-lib/aws-stepfunctions';
 import * as tasks from 'aws-cdk-lib/aws-stepfunctions-tasks';
 import { Construct } from 'constructs';
 
+export interface DataProcessingInfrastructureStackProps extends cdk.StackProps {
+  rawFileRetentionDays: number;
+}
+
 export class DataProcessingInfrastructureStack extends cdk.Stack {
-  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+  constructor(scope: Construct, id: string, props: DataProcessingInfrastructureStackProps) {
     super(scope, id, props);
+
+    const dataKey = new kms.Key(this, 'DataProcessingKey', {
+      alias: 'alias/data-processing-infrastructure',
+      description: 'Encrypts S3 objects and application secrets for the CSV processing pipeline.',
+      enableKeyRotation: true,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
 
     const rawUploadsBucket = new s3.Bucket(this, 'RawUploadsBucket', {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      encryption: s3.BucketEncryption.S3_MANAGED,
+      bucketKeyEnabled: true,
+      encryption: s3.BucketEncryption.KMS,
+      encryptionKey: dataKey,
       enforceSSL: true,
       eventBridgeEnabled: true,
+      objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
       lifecycleRules: [
         {
-          expiration: cdk.Duration.days(7),
+          expiration: cdk.Duration.days(props.rawFileRetentionDays),
+          noncurrentVersionExpiration: cdk.Duration.days(props.rawFileRetentionDays),
         },
       ],
+      versioned: true,
     });
 
     const processedFilesBucket = new s3.Bucket(this, 'ProcessedFilesBucket', {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      encryption: s3.BucketEncryption.S3_MANAGED,
+      bucketKeyEnabled: true,
+      encryption: s3.BucketEncryption.KMS,
+      encryptionKey: dataKey,
       enforceSSL: true,
+      objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      versioned: true,
     });
 
     const failedFilesBucket = new s3.Bucket(this, 'FailedFilesBucket', {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      encryption: s3.BucketEncryption.S3_MANAGED,
+      bucketKeyEnabled: true,
+      encryption: s3.BucketEncryption.KMS,
+      encryptionKey: dataKey,
       enforceSSL: true,
+      objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      versioned: true,
     });
 
     const databaseCredentials = new secretsmanager.Secret(this, 'DatabaseCredentialsSecret', {
       description: 'Placeholder database credentials for the CSV processor.',
+      encryptionKey: dataKey,
       generateSecretString: {
         secretStringTemplate: JSON.stringify({
           username: 'processor_user',
@@ -53,6 +82,7 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
 
     const externalApiKey = new secretsmanager.Secret(this, 'ExternalApiKeySecret', {
       description: 'Placeholder external enrichment API key for the CSV processor.',
+      encryptionKey: dataKey,
       generateSecretString: {
         secretStringTemplate: JSON.stringify({
           provider: 'customer-enrichment-api',
@@ -61,26 +91,57 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
       },
     });
 
-    // Public subnets keep the demo deployable without NAT Gateway cost. A production
-    // version would normally run tasks in private subnets with VPC endpoints/NAT.
+    // Tasks run in private subnets. NAT is included because the placeholder public
+    // image and external enrichment API need outbound HTTPS access.
     const vpc = new ec2.Vpc(this, 'ProcessingVpc', {
       maxAzs: 2,
-      natGateways: 0,
+      natGateways: 1,
       subnetConfiguration: [
         {
           name: 'Public',
           subnetType: ec2.SubnetType.PUBLIC,
         },
+        {
+          name: 'Private',
+          subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
+        },
       ],
     });
+
+    vpc.addGatewayEndpoint('S3Endpoint', {
+      service: ec2.GatewayVpcEndpointAwsService.S3,
+    });
+
+    const taskSecurityGroup = new ec2.SecurityGroup(this, 'ProcessorTaskSecurityGroup', {
+      vpc,
+      allowAllOutbound: false,
+      description: 'Restricts processor task egress to DNS and HTTPS.',
+    });
+
+    taskSecurityGroup.addEgressRule(
+      ec2.Peer.ipv4(vpc.vpcCidrBlock),
+      ec2.Port.tcp(53),
+      'Allow DNS over TCP to the VPC resolver.',
+    );
+    taskSecurityGroup.addEgressRule(
+      ec2.Peer.ipv4(vpc.vpcCidrBlock),
+      ec2.Port.udp(53),
+      'Allow DNS over UDP to the VPC resolver.',
+    );
+    taskSecurityGroup.addEgressRule(
+      ec2.Peer.anyIpv4(),
+      ec2.Port.tcp(443),
+      'Allow HTTPS to AWS APIs and the external enrichment API.',
+    );
 
     const cluster = new ecs.Cluster(this, 'ProcessingCluster', {
       vpc,
     });
 
     const logGroup = new logs.LogGroup(this, 'ProcessorLogGroup', {
-      retention: logs.RetentionDays.ONE_WEEK,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      encryptionKey: dataKey,
+      retention: logs.RetentionDays.ONE_MONTH,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
 
     const taskDefinition = new ecs.FargateTaskDefinition(this, 'ProcessorTaskDefinition', {
@@ -95,10 +156,12 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
         streamPrefix: 'csv-processor',
         logGroup,
       }),
+      readonlyRootFilesystem: true,
+      user: '65534:65534',
       command: [
         'sh',
         '-c',
-        'echo "Processing $OBJECT_KEY from $RAW_BUCKET for job $JOB_ID"; sleep 300; echo "Done"',
+        'echo "Processing job $JOB_ID"; sleep 300; echo "Done"',
       ],
     });
 
@@ -120,9 +183,10 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
       cluster,
       taskDefinition,
       launchTarget: new tasks.EcsFargateLaunchTarget(),
-      assignPublicIp: true,
+      assignPublicIp: false,
+      securityGroups: [taskSecurityGroup],
       subnets: {
-        subnetType: ec2.SubnetType.PUBLIC,
+        subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
       },
       containerOverrides: [
         {

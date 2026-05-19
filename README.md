@@ -1,6 +1,6 @@
 # Data Processing Infrastructure
 
-AWS CDK v2 TypeScript solution for a small CSV processing pipeline. Users upload large customer CSV files to S3, an EventBridge rule starts a Step Functions workflow, and the workflow runs a one-off ECS Fargate task that represents the black-box processor.
+AWS CDK v2 TypeScript solution for a small CSV processing pipeline. Users upload large customer CSV files to S3, an EventBridge rule starts a Step Functions workflow, and the workflow runs a one-off ECS Fargate task in private subnets that represents the black-box processor.
 
 The processor application itself is intentionally not implemented. The current container uses `public.ecr.aws/docker/library/busybox:latest` as a placeholder and should be replaced by the real image in production.
 
@@ -17,6 +17,7 @@ flowchart LR
     ecs --> failed[(Failed files S3 bucket)]
     ecs --> secrets[Secrets Manager]
     ecs --> logs[CloudWatch Logs]
+    ecs --> kms[KMS key]
     ecs -. status update hook .-> db[(Main database)]
 ```
 
@@ -33,27 +34,32 @@ flowchart LR
 ## Design Decisions
 
 - One CDK stack keeps the assignment easy to review and avoids unnecessary module structure.
-- S3 buckets block public access, enforce SSL, and use S3-managed encryption for a simple secure default.
+- S3 buckets block public access, enforce SSL, use bucket-owner-enforced object ownership, versioning, and customer-managed KMS encryption.
 - Raw uploads expire after 7 days because the canonical result should live in the processed output and main database.
 - EventBridge notifications are enabled on the raw bucket so object creation can start the workflow without Lambda glue code.
 - Step Functions uses `ecs:runTask.sync`, which is a good fit for 5-10 minute file processing jobs and gives workflow-level retry/failure handling.
 - Fargate CPU and memory are set to `1024` CPU units and `2048` MiB for a demo-sized task. Real sizing should be based on processor profiling and CSV memory behavior.
-- The demo VPC uses public subnets and no NAT gateway to keep deployment cost low. A production deployment would usually use private subnets plus NAT or VPC endpoints.
+- Fargate tasks run in private subnets with no public IP. A NAT gateway is included for the placeholder public image and external API access.
+- The stack uses the account and region from the active AWS CLI/CDK environment instead of hardcoding an account ID.
 
 ## Security Considerations
 
 - Public S3 access is blocked on all buckets.
 - Buckets enforce TLS using `enforceSSL`.
+- S3, Secrets Manager, and CloudWatch Logs use a customer-managed KMS key with key rotation enabled.
+- ECS tasks run in private subnets and use a security group that allows DNS plus outbound HTTPS only.
+- The placeholder container runs as a non-root user with a read-only root filesystem.
 - The ECS task role is granted read access only to the raw bucket, write access only to the processed and failed buckets, and read access only to the two placeholder secrets.
 - Secrets Manager stores placeholder database credentials and an external API key. The stack passes secret ARNs to the task; the application would retrieve values at runtime.
 - IAM permissions are intentionally resource-scoped through CDK grants where possible.
-- Production systems should consider customer-managed KMS keys, stricter network egress controls, malware scanning, object ownership rules, and audit retention requirements.
+- Production systems should still consider malware scanning, stricter API egress allowlists, centralized audit retention, and organization-level guardrails.
 
 ## Trade-offs
 
 - No Lambda preprocessor is included; Step Functions receives the S3 event directly from EventBridge to keep the design small.
 - No database, RDS proxy, or job table is deployed because the prompt treats the processor and main database as external concerns.
 - The placeholder processor command only logs and sleeps. It demonstrates orchestration without pretending to scrub or enrich CSV data.
+- A NAT gateway improves the private-subnet posture but adds cost. A production version could reduce NAT dependency with VPC endpoints and a private ECR image.
 - Fargate is simpler than a persistent ECS service or AWS Batch for this assignment. AWS Batch could be attractive for heavier scheduling, queues, or very high concurrency.
 
 ## Future Improvements
@@ -61,7 +67,7 @@ flowchart LR
 - Replace the BusyBox image with the real processor image in ECR.
 - Add a job metadata table for idempotency, status tracking, retry visibility, and user-facing progress.
 - Add dead-letter handling or operational alerts for failed workflow executions.
-- Add private subnets, VPC endpoints, and tighter outbound access for production networking.
+- Add interface VPC endpoints for Secrets Manager, CloudWatch Logs, ECR, and Step Functions where they fit the target region and cost profile.
 - Add reserved concurrency controls or EventBridge/SQS buffering if many large files can arrive at once.
 - Add integration tests that assert the synthesized IAM policy scope and Step Functions input paths.
 
@@ -69,9 +75,37 @@ flowchart LR
 
 ```bash
 npm install
+aws configure
+cdk bootstrap aws://<account-id>/<region>
 npm run build
 cdk synth
 cdk deploy
 ```
 
-The stack outputs the raw, processed, and failed bucket names after deployment.
+`aws configure` should point to the AWS account where you want to deploy. The stack is portable across accounts and regions; set the target account and region through your AWS CLI profile, or export them explicitly:
+
+```bash
+export AWS_ACCOUNT_ID=<your-account-id>
+export AWS_REGION=<aws-region>
+cdk bootstrap aws://$AWS_ACCOUNT_ID/$AWS_REGION
+cdk deploy
+```
+
+If neither `AWS_ACCOUNT_ID` nor `AWS_REGION` is set, CDK uses the active CLI profile/default environment. The stack outputs the raw, processed, and failed bucket names after deployment.
+
+Raw file retention defaults to 7 days and can be changed per command:
+
+```bash
+cdk deploy -c rawFileRetentionDays=14
+```
+
+## CI/CD
+
+GitHub Actions runs a CI workflow on pull requests and pushes to `main`:
+
+- `npm ci`
+- `npm run build`
+- `npm test -- --runInBand`
+- `npx cdk synth`
+
+The workflow intentionally does not deploy yet. For deployment automation, add a separate workflow using GitHub OIDC and an AWS IAM role scoped to this stack instead of storing long-lived AWS access keys in GitHub secrets.

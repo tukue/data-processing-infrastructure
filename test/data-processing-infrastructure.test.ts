@@ -1,10 +1,13 @@
 import * as cdk from 'aws-cdk-lib';
 import { Match, Template } from 'aws-cdk-lib/assertions';
+import { resolveDeploymentConfig } from '../lib/deployment-config';
 import * as DataProcessingInfrastructure from '../lib/data-processing-infrastructure-stack';
 
 test('creates secured buckets, ECS task, and workflow trigger', () => {
   const app = new cdk.App();
-  const stack = new DataProcessingInfrastructure.DataProcessingInfrastructureStack(app, 'MyTestStack');
+  const stack = new DataProcessingInfrastructure.DataProcessingInfrastructureStack(app, 'MyTestStack', {
+    rawFileRetentionDays: 7,
+  });
   const template = Template.fromStack(stack);
 
   template.resourceCountIs('AWS::S3::Bucket', 3);
@@ -19,6 +22,7 @@ test('creates secured buckets, ECS task, and workflow trigger', () => {
       Rules: Match.arrayWith([
         Match.objectLike({
           ExpirationInDays: 7,
+          NoncurrentVersionExpirationInDays: 7,
         }),
       ]),
     },
@@ -53,4 +57,81 @@ test('creates secured buckets, ECS task, and workflow trigger', () => {
       'detail-type': ['Object Created'],
     }),
   });
+});
+
+test('uses configured raw file retention days in lifecycle policy', () => {
+  const app = new cdk.App();
+  const stack = new DataProcessingInfrastructure.DataProcessingInfrastructureStack(app, 'RetentionTestStack', {
+    rawFileRetentionDays: 14,
+  });
+  const template = Template.fromStack(stack);
+
+  template.hasResourceProperties('AWS::S3::Bucket', {
+    LifecycleConfiguration: {
+      Rules: Match.arrayWith([
+        Match.objectLike({
+          ExpirationInDays: 14,
+          NoncurrentVersionExpirationInDays: 14,
+        }),
+      ]),
+    },
+  });
+});
+
+test('resolves deployment account, region, and retention from environment', () => {
+  const app = new cdk.App();
+  const config = resolveDeploymentConfig(app, {
+    AWS_ACCOUNT_ID: 'test-account',
+    AWS_REGION: 'eu-north-1',
+    RAW_FILE_RETENTION_DAYS: '21',
+  });
+
+  expect(config).toEqual({
+    env: {
+      account: 'test-account',
+      region: 'eu-north-1',
+    },
+    rawFileRetentionDays: 21,
+  });
+});
+
+test('falls back to CDK default account and region from the active AWS profile', () => {
+  const app = new cdk.App();
+  const config = resolveDeploymentConfig(app, {
+    CDK_DEFAULT_ACCOUNT: 'profile-account',
+    CDK_DEFAULT_REGION: 'profile-region',
+  });
+
+  expect(config).toEqual({
+    env: {
+      account: 'profile-account',
+      region: 'profile-region',
+    },
+    rawFileRetentionDays: 7,
+  });
+});
+
+test('allows CDK context to override raw file retention days', () => {
+  const app = new cdk.App({
+    context: {
+      rawFileRetentionDays: '30',
+    },
+  });
+  const config = resolveDeploymentConfig(app, {
+    AWS_ACCOUNT_ID: 'test-account',
+    AWS_REGION: 'eu-west-1',
+    RAW_FILE_RETENTION_DAYS: '21',
+  });
+
+  expect(config.rawFileRetentionDays).toBe(30);
+});
+
+test('rejects invalid raw file retention days', () => {
+  const app = new cdk.App();
+
+  expect(() =>
+    resolveDeploymentConfig(app, {
+      RAW_FILE_RETENTION_DAYS: '0',
+    }),
+  ).toThrow('rawFileRetentionDays must be a positive integer.');
 });
