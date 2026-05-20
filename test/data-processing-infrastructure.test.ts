@@ -55,6 +55,11 @@ test('creates secured buckets, ECS task, and workflow trigger', () => {
     },
   });
 
+  const lifecycleBuckets = Object.values(template.findResources('AWS::S3::Bucket')).filter(
+    (bucket) => bucket.Properties?.LifecycleConfiguration,
+  );
+  expect(lifecycleBuckets).toHaveLength(2);
+
   template.hasResourceProperties('AWS::ECS::TaskDefinition', {
     Cpu: '1024',
     Memory: '2048',
@@ -106,6 +111,11 @@ test('uses configured raw file retention days in lifecycle policy', () => {
       ]),
     },
   });
+
+  const lifecycleBuckets = Object.values(template.findResources('AWS::S3::Bucket')).filter(
+    (bucket) => bucket.Properties?.LifecycleConfiguration,
+  );
+  expect(lifecycleBuckets).toHaveLength(2);
 });
 
 test('resolves deployment account, region, and retention from environment', () => {

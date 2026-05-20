@@ -47,7 +47,7 @@ The implementation is intentionally small enough for a take-home assignment, but
 - **Data protection by default:** S3 buckets block public access, enforce SSL, use bucket-owner-enforced object ownership, versioning, and customer-managed KMS encryption.
 - **Multipart uploads for large files:** The raw bucket is intended to receive large CSV files through S3 multipart upload. This improves reliability for multi-GB files and lets clients retry individual parts instead of restarting the whole upload.
 - **PII visibility with Macie:** Amazon Macie is enabled for the account/region and Macie findings are captured through EventBridge into an encrypted CloudWatch log group for review.
-- **Raw data retention:** Raw uploads expire after a configurable retention period. The default is 7 days because the durable outputs should be the processed bucket and main database, not indefinite raw PII storage.
+- **Raw and failed data retention:** Raw uploads and failed processing artifacts expire after a configurable retention period. The default is 7 days because failed files can contain unsanitized PII and should not be retained indefinitely.
 - **Least-privilege task role:** The task role can read raw inputs, write processed/failed outputs, and read only the two required secrets.
 - **Portable deployment:** Account, region, and raw retention are configurable through environment variables or CDK context so the same code can deploy to another AWS account or region without source edits.
 - **Placeholder processor:** The BusyBox container only demonstrates orchestration. In production, this would be replaced by a pinned private ECR image with scanning and release controls.
@@ -56,6 +56,7 @@ The implementation is intentionally small enough for a take-home assignment, but
 
 - Public S3 access is blocked on all buckets.
 - Buckets enforce TLS using `enforceSSL`.
+- Raw and failed S3 objects have lifecycle expiration to reduce long-lived PII exposure.
 - S3, Secrets Manager, and CloudWatch Logs use a customer-managed KMS key with key rotation enabled.
 - Amazon Macie is enabled to support sensitive data discovery and S3 data security findings.
 - Macie findings are routed to CloudWatch Logs through EventBridge so findings are visible without adding another notification service to the demo.
@@ -118,7 +119,7 @@ cdk deploy
 
 If neither `AWS_ACCOUNT_ID` nor `AWS_REGION` is set, CDK uses the active CLI profile/default environment. The stack outputs the raw, processed, and failed bucket names after deployment.
 
-Raw file retention defaults to 7 days and can be changed per command:
+Raw and failed file retention defaults to 7 days and can be changed per command:
 
 ```bash
 cdk deploy -c rawFileRetentionDays=14

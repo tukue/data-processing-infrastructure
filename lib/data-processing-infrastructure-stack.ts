@@ -63,6 +63,12 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
       encryption: s3.BucketEncryption.KMS,
       encryptionKey: dataKey,
       enforceSSL: true,
+      lifecycleRules: [
+        {
+          expiration: cdk.Duration.days(props.rawFileRetentionDays),
+          noncurrentVersionExpiration: cdk.Duration.days(props.rawFileRetentionDays),
+        },
+      ],
       objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
       removalPolicy: cdk.RemovalPolicy.RETAIN,
       versioned: true,
