@@ -309,7 +309,13 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
       expressionAttributeValues: {
         ':status': tasks.DynamoAttributeValue.fromString('FAILED'),
         ':completedAt': tasks.DynamoAttributeValue.fromString(sfn.JsonPath.stringAt('$$.State.EnteredTime')),
-        ':failureCause': tasks.DynamoAttributeValue.fromString(sfn.JsonPath.stringAt('$.error.Cause')),
+        ':failureCause': tasks.DynamoAttributeValue.fromString(
+          sfn.JsonPath.format(
+            'Error: {} | Cause: {}',
+            sfn.JsonPath.stringAt('$.error.Error'),
+            sfn.JsonPath.stringAt('$.error.Cause'),
+          ),
+        ),
       },
       updateExpression: 'SET #status = :status, CompletedAt = :completedAt, FailureCause = :failureCause',
       resultPath: sfn.JsonPath.DISCARD,
