@@ -98,7 +98,7 @@ The implementation is intentionally small enough for a take-home assignment, but
 
 - Replace the BusyBox image with the real processor image in ECR.
 - Add user-facing APIs over the job metadata table for progress and retry visibility.
-- Add operational alerts for failed workflow executions and dead-letter queue depth.
+- Add operational alerts for failed workflow executions.
 - Add Macie custom data identifiers for domain-specific customer identifiers if the default managed identifiers are not enough.
 - Add interface VPC endpoints for Secrets Manager, CloudWatch Logs, ECR, and Step Functions where they fit the target region and cost profile.
 - Add reserved concurrency controls or EventBridge/SQS buffering if many large files can arrive at once.
