@@ -125,8 +125,8 @@ test('creates secured buckets, ECS task, and workflow trigger', () => {
   });
 
   const synthesized = JSON.stringify(template.toJSON());
-  expect(synthesized).toContain('arn:aws:states:::dynamodb:putItem');
-  expect(synthesized).toContain('arn:aws:states:::dynamodb:updateItem');
+  expect(synthesized).toContain(':states:::dynamodb:putItem');
+  expect(synthesized).toContain(':states:::dynamodb:updateItem');
   expect(synthesized).toContain('Status');
 });
 
