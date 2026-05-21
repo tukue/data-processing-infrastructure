@@ -17,6 +17,7 @@
     ]
   },
   "context": {
+    "processorImage": "123456789012.dkr.ecr.eu-north-1.amazonaws.com/csv-processor:latest",
     "@aws-cdk-containers/ecs-service-extensions:enableDefaultLogDriver": true,
     "@aws-cdk/aws-apigateway:authorizerChangeDeploymentLogicalId": true,
     "@aws-cdk/aws-apigateway:disableCloudWatchRole": true,

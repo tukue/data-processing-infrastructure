@@ -15,6 +15,7 @@ import * as tasks from 'aws-cdk-lib/aws-stepfunctions-tasks';
 import { Construct } from 'constructs';
 
 export interface DataProcessingInfrastructureStackProps extends cdk.StackProps {
+  processorImage: string;
   rawFileRetentionDays: number;
 }
 
@@ -202,19 +203,13 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
     });
 
     const container = taskDefinition.addContainer('CsvProcessorContainer', {
-      // Placeholder only: replace this with the real private ECR processor image.
-      image: ecs.ContainerImage.fromRegistry('public.ecr.aws/docker/library/busybox:latest'),
+      image: ecs.ContainerImage.fromRegistry(props.processorImage),
       logging: ecs.LogDrivers.awsLogs({
         streamPrefix: 'csv-processor',
         logGroup,
       }),
       readonlyRootFilesystem: true,
       user: '65534:65534',
-      command: [
-        'sh',
-        '-c',
-        'echo "Processing job $JOB_ID"; sleep 300; echo "Done"',
-      ],
     });
 
     container.addEnvironment('PROCESSED_BUCKET', processedFilesBucket.bucketName);

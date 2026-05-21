@@ -2,7 +2,7 @@
 
 AWS CDK v2 TypeScript solution for a small CSV processing pipeline. Users upload large customer CSV files to S3, an EventBridge rule starts a Step Functions workflow, and the workflow runs a one-off ECS Fargate task in private subnets that represents the black-box processor.
 
-The processor application itself is intentionally not implemented. The current container uses `public.ecr.aws/docker/library/busybox:latest` as a placeholder and should be replaced by the real image in production.
+The processor application itself is intentionally not implemented. The ECS task image is configurable through CDK context or `PROCESSOR_IMAGE` and should point to a pinned private ECR image in production.
 
 ## Architecture
 
@@ -46,7 +46,7 @@ The implementation is intentionally small enough for a take-home assignment, but
 - **Event-driven orchestration:** S3 Object Created events flow through EventBridge directly into Step Functions. This avoids Lambda glue code and keeps retry/failure behavior visible in the workflow.
 - **Fargate for long-running work:** Processing takes 5-10 minutes, which is too long for a simple synchronous request path. A one-off Fargate task fits a black-box container processor without requiring a continuously running ECS service.
 - **Step Functions native ECS integration:** The workflow uses the native `ecs:runTask.sync` integration so Step Functions waits for task completion and can apply workflow-level retry and catch handling.
-- **Private task networking:** Fargate tasks run in private subnets with no public IP. A NAT gateway is included so the placeholder public image and future external enrichment API can be reached over HTTPS.
+- **Private task networking:** Fargate tasks run in private subnets with no public IP. A NAT gateway is included so the processor image and future external enrichment API can be reached over HTTPS.
 - **Data protection by default:** S3 buckets block public access, enforce SSL, use bucket-owner-enforced object ownership, versioning, and customer-managed KMS encryption.
 - **Multipart uploads for large files:** The raw bucket is intended to receive large CSV files through S3 multipart upload. This improves reliability for multi-GB files and lets clients retry individual parts instead of restarting the whole upload.
 - **Job metadata table:** Step Functions persists job status in DynamoDB using a deterministic key based on bucket, object key, and S3 sequencer. This gives operators a small, queryable control plane without introducing a relational database into the assignment.
@@ -56,7 +56,7 @@ The implementation is intentionally small enough for a take-home assignment, but
 - **Raw and failed data retention:** Raw uploads and failed processing artifacts expire after a configurable retention period. The default is 7 days because failed files can contain unsanitized PII and should not be retained indefinitely.
 - **Least-privilege task role:** The task role can read raw inputs, write processed/failed outputs, and read only the two required secrets.
 - **Portable deployment:** Account, region, and raw retention are configurable through environment variables or CDK context so the same code can deploy to another AWS account or region without source edits.
-- **Placeholder processor:** The BusyBox container only demonstrates orchestration. In production, this would be replaced by a pinned private ECR image with scanning and release controls.
+- **Configurable processor image:** The stack does not hardcode the processor container. Deployments provide an image URI through `PROCESSOR_IMAGE` or `-c processorImage=...`, preferably a pinned private ECR image with scanning and release controls.
 
 ## Security Considerations
 
@@ -78,7 +78,7 @@ The implementation is intentionally small enough for a take-home assignment, but
 
 - No Lambda preprocessor is included; Step Functions receives the S3 event directly from EventBridge to keep the design small.
 - No main relational database, RDS proxy, or domain schema is deployed because the prompt treats the processor and main database as external concerns. The DynamoDB table is only an operational job ledger for orchestration status.
-- The placeholder processor command only logs and sleeps. It demonstrates orchestration without pretending to scrub or enrich CSV data.
+- The stack configures the processor runtime environment but does not implement the processor image itself. The container image is expected to own CSV parsing, enrichment, output writing, and any domain database updates.
 - A NAT gateway improves the private-subnet posture but adds cost. A production version could reduce NAT dependency with VPC endpoints and a private ECR image.
 - Fargate is simpler than a persistent ECS service or AWS Batch for this assignment. AWS Batch could be attractive for heavier scheduling, queues, or very high concurrency.
 - Multipart upload initiation and presigned URL generation are intentionally outside this stack because the assignment does not include an upload API. A real product would add an authenticated API for creating multipart upload sessions.
@@ -96,7 +96,7 @@ The implementation is intentionally small enough for a take-home assignment, but
 
 ## Future Improvements
 
-- Replace the BusyBox image with the real processor image in ECR.
+- Replace the sample processor image URI with the real pinned processor image in ECR.
 - Add user-facing APIs over the job metadata table for progress and retry visibility.
 - Add operational alerts for failed workflow executions.
 - Add Macie custom data identifiers for domain-specific customer identifiers if the default managed identifiers are not enough.
@@ -120,6 +120,7 @@ cdk deploy
 ```bash
 export AWS_ACCOUNT_ID=<your-account-id>
 export AWS_REGION=<aws-region>
+export PROCESSOR_IMAGE=<account-id>.dkr.ecr.<aws-region>.amazonaws.com/csv-processor:<tag>
 cdk bootstrap aws://$AWS_ACCOUNT_ID/$AWS_REGION
 cdk deploy
 ```
@@ -130,6 +131,12 @@ Raw and failed file retention defaults to 7 days and can be changed per command:
 
 ```bash
 cdk deploy -c rawFileRetentionDays=14
+```
+
+The processor image can also be provided per command:
+
+```bash
+cdk deploy -c processorImage=<account-id>.dkr.ecr.<aws-region>.amazonaws.com/csv-processor:<tag>
 ```
 
 ## CI/CD

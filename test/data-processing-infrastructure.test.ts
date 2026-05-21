@@ -3,9 +3,12 @@ import { Match, Template } from 'aws-cdk-lib/assertions';
 import { resolveDeploymentConfig } from '../lib/deployment-config';
 import * as DataProcessingInfrastructure from '../lib/data-processing-infrastructure-stack';
 
+const TEST_PROCESSOR_IMAGE = '123456789012.dkr.ecr.eu-north-1.amazonaws.com/csv-processor:2026-05-21';
+
 test('creates secured buckets, ECS task, and workflow trigger', () => {
   const app = new cdk.App();
   const stack = new DataProcessingInfrastructure.DataProcessingInfrastructureStack(app, 'MyTestStack', {
+    processorImage: TEST_PROCESSOR_IMAGE,
     rawFileRetentionDays: 7,
   });
   const template = Template.fromStack(stack);
@@ -61,6 +64,11 @@ test('creates secured buckets, ECS task, and workflow trigger', () => {
   expect(lifecycleBuckets).toHaveLength(2);
 
   template.hasResourceProperties('AWS::ECS::TaskDefinition', {
+    ContainerDefinitions: Match.arrayWith([
+      Match.objectLike({
+        Image: TEST_PROCESSOR_IMAGE,
+      }),
+    ]),
     Cpu: '1024',
     Memory: '2048',
     RequiresCompatibilities: ['FARGATE'],
@@ -133,6 +141,7 @@ test('creates secured buckets, ECS task, and workflow trigger', () => {
 test('uses configured raw file retention days in lifecycle policy', () => {
   const app = new cdk.App();
   const stack = new DataProcessingInfrastructure.DataProcessingInfrastructureStack(app, 'RetentionTestStack', {
+    processorImage: TEST_PROCESSOR_IMAGE,
     rawFileRetentionDays: 14,
   });
   const template = Template.fromStack(stack);
@@ -164,6 +173,7 @@ test('resolves deployment account, region, and retention from environment', () =
   const config = resolveDeploymentConfig(app, {
     AWS_ACCOUNT_ID: 'test-account',
     AWS_REGION: 'eu-north-1',
+    PROCESSOR_IMAGE: TEST_PROCESSOR_IMAGE,
     RAW_FILE_RETENTION_DAYS: '21',
   });
 
@@ -172,6 +182,7 @@ test('resolves deployment account, region, and retention from environment', () =
       account: 'test-account',
       region: 'eu-north-1',
     },
+    processorImage: TEST_PROCESSOR_IMAGE,
     rawFileRetentionDays: 21,
   });
 });
@@ -181,6 +192,7 @@ test('falls back to CDK default account and region from the active AWS profile',
   const config = resolveDeploymentConfig(app, {
     CDK_DEFAULT_ACCOUNT: 'profile-account',
     CDK_DEFAULT_REGION: 'profile-region',
+    PROCESSOR_IMAGE: TEST_PROCESSOR_IMAGE,
   });
 
   expect(config).toEqual({
@@ -188,6 +200,7 @@ test('falls back to CDK default account and region from the active AWS profile',
       account: 'profile-account',
       region: 'profile-region',
     },
+    processorImage: TEST_PROCESSOR_IMAGE,
     rawFileRetentionDays: 7,
   });
 });
@@ -195,15 +208,18 @@ test('falls back to CDK default account and region from the active AWS profile',
 test('allows CDK context to override raw file retention days', () => {
   const app = new cdk.App({
     context: {
+      processorImage: '123456789012.dkr.ecr.eu-west-1.amazonaws.com/csv-processor:context',
       rawFileRetentionDays: '30',
     },
   });
   const config = resolveDeploymentConfig(app, {
     AWS_ACCOUNT_ID: 'test-account',
     AWS_REGION: 'eu-west-1',
+    PROCESSOR_IMAGE: TEST_PROCESSOR_IMAGE,
     RAW_FILE_RETENTION_DAYS: '21',
   });
 
+  expect(config.processorImage).toBe('123456789012.dkr.ecr.eu-west-1.amazonaws.com/csv-processor:context');
   expect(config.rawFileRetentionDays).toBe(30);
 });
 
@@ -212,7 +228,16 @@ test('rejects invalid raw file retention days', () => {
 
   expect(() =>
     resolveDeploymentConfig(app, {
+      PROCESSOR_IMAGE: TEST_PROCESSOR_IMAGE,
       RAW_FILE_RETENTION_DAYS: '0',
     }),
   ).toThrow('rawFileRetentionDays must be a positive integer.');
+});
+
+test('requires a processor image', () => {
+  const app = new cdk.App();
+
+  expect(() => resolveDeploymentConfig(app, {})).toThrow(
+    'processorImage must be provided through CDK context or PROCESSOR_IMAGE.',
+  );
 });
