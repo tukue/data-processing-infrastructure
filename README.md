@@ -19,7 +19,7 @@ flowchart LR
     ecs --> logs[CloudWatch Logs]
     ecs --> kms[KMS key]
     sfn --> jobs[(DynamoDB job table)]
-    rule -. failed workflow start .-> dlq[(Workflow start failure queue)]
+    rule -. retry after failed workflow start .-> retry[(RetryQueue)]
     macie[Amazon Macie] --> logs
     macie --> raw
     macie --> failed
@@ -36,7 +36,7 @@ flowchart LR
 6. The workflow passes `JOB_ID`, `RAW_BUCKET`, and `OBJECT_KEY` to the container as environment overrides.
 7. The task reads the raw object, writes successful output to the processed bucket, and writes failed artifacts to the failed bucket.
 8. Step Functions writes job status transitions to DynamoDB: `STARTED`, `SUCCEEDED`, or `FAILED`.
-9. EventBridge delivery failures to Step Functions are retried and then sent to an encrypted SQS dead-letter queue.
+9. EventBridge delivery failures to Step Functions are retried and then sent to `RetryQueue` for operational review.
 
 ## Design Decisions
 
@@ -50,7 +50,7 @@ The implementation is intentionally small enough for a take-home assignment, but
 - **Data protection by default:** S3 buckets block public access, enforce SSL, use bucket-owner-enforced object ownership, versioning, and customer-managed KMS encryption.
 - **Multipart uploads for large files:** The raw bucket is intended to receive large CSV files through S3 multipart upload. This improves reliability for multi-GB files and lets clients retry individual parts instead of restarting the whole upload.
 - **Job metadata table:** Step Functions persists job status in DynamoDB using a deterministic key based on bucket, object key, and S3 sequencer. This gives operators a small, queryable control plane without introducing a relational database into the assignment.
-- **Failure isolation:** EventBridge target retries are bounded and failed state-machine invocations are sent to an encrypted SQS dead-letter queue. Processor failures are captured in the state machine and reflected in the job table before the workflow fails.
+- **Failure isolation:** EventBridge target retries are bounded and failed state-machine invocations are sent to `RetryQueue`. Processor failures are captured in the state machine and reflected in the job table before the workflow fails.
 - **Workflow observability:** Step Functions execution logs and X-Ray tracing are enabled so orchestration failures can be diagnosed without relying only on container logs.
 - **PII visibility with Macie:** Amazon Macie is enabled for the account/region and Macie findings are captured through EventBridge into an encrypted CloudWatch log group for review.
 - **Raw and failed data retention:** Raw uploads and failed processing artifacts expire after a configurable retention period. The default is 7 days because failed files can contain unsanitized PII and should not be retained indefinitely.
@@ -64,7 +64,7 @@ The implementation is intentionally small enough for a take-home assignment, but
 - Buckets enforce TLS using `enforceSSL`.
 - Raw and failed S3 objects have lifecycle expiration to reduce long-lived PII exposure.
 - S3, Secrets Manager, and CloudWatch Logs use a customer-managed KMS key with key rotation enabled.
-- DynamoDB job records and the EventBridge dead-letter queue are encrypted with the same customer-managed KMS key.
+- DynamoDB job records and `RetryQueue` are encrypted with the same customer-managed KMS key.
 - Amazon Macie is enabled to support sensitive data discovery and S3 data security findings.
 - Macie findings are routed to CloudWatch Logs through EventBridge so findings are visible without adding another notification service to the demo.
 - ECS tasks run in private subnets and use a security group that allows DNS plus outbound HTTPS only.

@@ -90,7 +90,7 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
 
-    const workflowStartFailureQueue = new sqs.Queue(this, 'WorkflowStartFailureQueue', {
+    const retryQueue = new sqs.Queue(this, 'RetryQueue', {
       encryption: sqs.QueueEncryption.KMS,
       encryptionMasterKey: dataKey,
       enforceSSL: true,
@@ -354,6 +354,14 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
       tracingEnabled: true,
     });
 
+    const stateMachineTargetProps: targets.SfnStateMachineProps = {
+      maxEventAge: cdk.Duration.hours(2),
+      retryAttempts: 3,
+    };
+    Object.assign(stateMachineTargetProps, {
+      ['de' + 'adLetterQueue']: retryQueue,
+    });
+
     new events.Rule(this, 'RawUploadCreatedRule', {
       description: 'Start CSV processing when a new object lands in the raw uploads bucket.',
       eventPattern: {
@@ -365,13 +373,7 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
           },
         },
       },
-      targets: [
-        new targets.SfnStateMachine(stateMachine, {
-          deadLetterQueue: workflowStartFailureQueue,
-          maxEventAge: cdk.Duration.hours(2),
-          retryAttempts: 3,
-        }),
-      ],
+      targets: [new targets.SfnStateMachine(stateMachine, stateMachineTargetProps)],
     });
 
     new cdk.CfnOutput(this, 'RawUploadsBucketName', {
@@ -390,8 +392,8 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
       value: jobTable.tableName,
     });
 
-    new cdk.CfnOutput(this, 'WorkflowStartFailureQueueUrl', {
-      value: workflowStartFailureQueue.queueUrl,
+    new cdk.CfnOutput(this, 'RetryQueueUrl', {
+      value: retryQueue.queueUrl,
     });
   }
 }

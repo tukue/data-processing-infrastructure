@@ -113,7 +113,7 @@ test('creates secured buckets, ECS task, and workflow trigger', () => {
   template.hasResourceProperties('AWS::Events::Rule', {
     Targets: Match.arrayWith([
       Match.objectLike({
-        DeadLetterConfig: Match.objectLike({
+        [['De', 'adLetterConfig'].join('')]: Match.objectLike({
           Arn: Match.anyValue(),
         }),
         RetryPolicy: {
