@@ -87,6 +87,47 @@ test('creates secured buckets, ECS task, and workflow trigger', () => {
       'detail-type': ['Macie Finding'],
     }),
   });
+
+  template.hasResourceProperties('AWS::DynamoDB::Table', {
+    BillingMode: 'PAY_PER_REQUEST',
+    KeySchema: [
+      {
+        AttributeName: 'JobId',
+        KeyType: 'HASH',
+      },
+    ],
+    PointInTimeRecoverySpecification: {
+      PointInTimeRecoveryEnabled: true,
+    },
+    SSESpecification: Match.objectLike({
+      SSEEnabled: true,
+      SSEType: 'KMS',
+    }),
+  });
+
+  template.hasResourceProperties('AWS::SQS::Queue', {
+    KmsMasterKeyId: Match.anyValue(),
+    MessageRetentionPeriod: 1209600,
+  });
+
+  template.hasResourceProperties('AWS::Events::Rule', {
+    Targets: Match.arrayWith([
+      Match.objectLike({
+        DeadLetterConfig: Match.objectLike({
+          Arn: Match.anyValue(),
+        }),
+        RetryPolicy: {
+          MaximumEventAgeInSeconds: 7200,
+          MaximumRetryAttempts: 3,
+        },
+      }),
+    ]),
+  });
+
+  const synthesized = JSON.stringify(template.toJSON());
+  expect(synthesized).toContain('arn:aws:states:::dynamodb:putItem');
+  expect(synthesized).toContain('arn:aws:states:::dynamodb:updateItem');
+  expect(synthesized).toContain('Status');
 });
 
 test('uses configured raw file retention days in lifecycle policy', () => {
