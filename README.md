@@ -18,10 +18,12 @@ flowchart LR
     ecs --> secrets[Secrets Manager]
     ecs --> logs[CloudWatch Logs]
     ecs --> kms[KMS key]
+    sfn --> jobs[(DynamoDB job table)]
+    rule -. retry after failed workflow start .-> retry[(RetryQueue)]
     macie[Amazon Macie] --> logs
     macie --> raw
     macie --> failed
-    ecs -. status update hook .-> db[(Main database)]
+    ecs -. domain writes .-> db[(Main database)]
 ```
 
 ## Flow
@@ -33,7 +35,8 @@ flowchart LR
 5. Step Functions runs a Fargate task using the native ECS integration.
 6. The workflow passes `JOB_ID`, `RAW_BUCKET`, and `OBJECT_KEY` to the container as environment overrides.
 7. The task reads the raw object, writes successful output to the processed bucket, and writes failed artifacts to the failed bucket.
-8. Placeholder Step Functions `Pass` states mark where job status updates to a database or job table would happen.
+8. Step Functions writes job status transitions to DynamoDB: `STARTED`, `SUCCEEDED`, or `FAILED`.
+9. EventBridge delivery failures to Step Functions are retried and then sent to `RetryQueue` for operational review.
 
 ## Design Decisions
 
@@ -46,6 +49,9 @@ The implementation is intentionally small enough for a take-home assignment, but
 - **Private task networking:** Fargate tasks run in private subnets with no public IP. A NAT gateway is included so the placeholder public image and future external enrichment API can be reached over HTTPS.
 - **Data protection by default:** S3 buckets block public access, enforce SSL, use bucket-owner-enforced object ownership, versioning, and customer-managed KMS encryption.
 - **Multipart uploads for large files:** The raw bucket is intended to receive large CSV files through S3 multipart upload. This improves reliability for multi-GB files and lets clients retry individual parts instead of restarting the whole upload.
+- **Job metadata table:** Step Functions persists job status in DynamoDB using a deterministic key based on bucket, object key, and S3 sequencer. This gives operators a small, queryable control plane without introducing a relational database into the assignment.
+- **Failure isolation:** EventBridge target retries are bounded and failed state-machine invocations are sent to `RetryQueue`. Processor failures are captured in the state machine and reflected in the job table before the workflow fails.
+- **Workflow observability:** Step Functions execution logs and X-Ray tracing are enabled so orchestration failures can be diagnosed without relying only on container logs.
 - **PII visibility with Macie:** Amazon Macie is enabled for the account/region and Macie findings are captured through EventBridge into an encrypted CloudWatch log group for review.
 - **Raw and failed data retention:** Raw uploads and failed processing artifacts expire after a configurable retention period. The default is 7 days because failed files can contain unsanitized PII and should not be retained indefinitely.
 - **Least-privilege task role:** The task role can read raw inputs, write processed/failed outputs, and read only the two required secrets.
@@ -58,6 +64,7 @@ The implementation is intentionally small enough for a take-home assignment, but
 - Buckets enforce TLS using `enforceSSL`.
 - Raw and failed S3 objects have lifecycle expiration to reduce long-lived PII exposure.
 - S3, Secrets Manager, and CloudWatch Logs use a customer-managed KMS key with key rotation enabled.
+- DynamoDB job records and `RetryQueue` are encrypted with the same customer-managed KMS key.
 - Amazon Macie is enabled to support sensitive data discovery and S3 data security findings.
 - Macie findings are routed to CloudWatch Logs through EventBridge so findings are visible without adding another notification service to the demo.
 - ECS tasks run in private subnets and use a security group that allows DNS plus outbound HTTPS only.
@@ -70,11 +77,12 @@ The implementation is intentionally small enough for a take-home assignment, but
 ## Trade-offs
 
 - No Lambda preprocessor is included; Step Functions receives the S3 event directly from EventBridge to keep the design small.
-- No database, RDS proxy, or job table is deployed because the prompt treats the processor and main database as external concerns.
+- No main relational database, RDS proxy, or domain schema is deployed because the prompt treats the processor and main database as external concerns. The DynamoDB table is only an operational job ledger for orchestration status.
 - The placeholder processor command only logs and sleeps. It demonstrates orchestration without pretending to scrub or enrich CSV data.
 - A NAT gateway improves the private-subnet posture but adds cost. A production version could reduce NAT dependency with VPC endpoints and a private ECR image.
 - Fargate is simpler than a persistent ECS service or AWS Batch for this assignment. AWS Batch could be attractive for heavier scheduling, queues, or very high concurrency.
 - Multipart upload initiation and presigned URL generation are intentionally outside this stack because the assignment does not include an upload API. A real product would add an authenticated API for creating multipart upload sessions.
+- The job table key includes the S3 sequencer, so overwrites of the same object become separate processing records. If the product needs strict one-record-per-object idempotency, use bucket and key alone with conditional writes.
 - Macie is enabled, but this stack does not create custom managed data identifiers or a full alerting workflow. In production, Macie findings would usually route to Security Hub, SNS, Slack/PagerDuty, or a ticketing workflow.
 
 ## Intentionally Not Included
@@ -82,7 +90,6 @@ The implementation is intentionally small enough for a take-home assignment, but
 - CSV parsing, PII scrubbing, enrichment logic, or database writes inside the processor application.
 - Upload API, authentication flow, or presigned multipart upload URL generation.
 - Main database, schema migrations, RDS proxy, or data access layer.
-- Job metadata table for user-facing progress and idempotency.
 - Production alerting, dashboards, runbooks, or incident response automation.
 - Multi-account deployment pipeline or automated production deployment.
 - Full compliance controls such as data subject deletion workflows, legal hold, or centralized audit retention.
@@ -90,8 +97,8 @@ The implementation is intentionally small enough for a take-home assignment, but
 ## Future Improvements
 
 - Replace the BusyBox image with the real processor image in ECR.
-- Add a job metadata table for idempotency, status tracking, retry visibility, and user-facing progress.
-- Add dead-letter handling or operational alerts for failed workflow executions.
+- Add user-facing APIs over the job metadata table for progress and retry visibility.
+- Add operational alerts for failed workflow executions.
 - Add Macie custom data identifiers for domain-specific customer identifiers if the default managed identifiers are not enough.
 - Add interface VPC endpoints for Secrets Manager, CloudWatch Logs, ECR, and Step Functions where they fit the target region and cost profile.
 - Add reserved concurrency controls or EventBridge/SQS buffering if many large files can arrive at once.

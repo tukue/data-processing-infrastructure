@@ -1,4 +1,5 @@
 import * as cdk from 'aws-cdk-lib';
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
 import * as events from 'aws-cdk-lib/aws-events';
@@ -8,6 +9,7 @@ import * as logs from 'aws-cdk-lib/aws-logs';
 import * as macie from 'aws-cdk-lib/aws-macie';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as sfn from 'aws-cdk-lib/aws-stepfunctions';
 import * as tasks from 'aws-cdk-lib/aws-stepfunctions-tasks';
 import { Construct } from 'constructs';
@@ -72,6 +74,27 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
       objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
       removalPolicy: cdk.RemovalPolicy.RETAIN,
       versioned: true,
+    });
+
+    const jobTable = new dynamodb.Table(this, 'ProcessingJobsTable', {
+      partitionKey: {
+        name: 'JobId',
+        type: dynamodb.AttributeType.STRING,
+      },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dataKey,
+      pointInTimeRecoverySpecification: {
+        pointInTimeRecoveryEnabled: true,
+      },
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    const retryQueue = new sqs.Queue(this, 'RetryQueue', {
+      encryption: sqs.QueueEncryption.KMS,
+      encryptionMasterKey: dataKey,
+      enforceSSL: true,
+      retentionPeriod: cdk.Duration.days(14),
     });
 
     const databaseCredentials = new secretsmanager.Secret(this, 'DatabaseCredentialsSecret', {
@@ -238,16 +261,64 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
       ],
     });
 
-    const markJobStarted = new sfn.Pass(this, 'MarkJobStarted', {
-      comment: 'Production hook: persist job status as STARTED in the main database or a job table.',
+    const jobId = sfn.JsonPath.format(
+      '{}#{}#{}',
+      sfn.JsonPath.stringAt('$.detail.bucket.name'),
+      sfn.JsonPath.stringAt('$.detail.object.key'),
+      sfn.JsonPath.stringAt('$.detail.object.sequencer'),
+    );
+
+    const markJobStarted = new tasks.DynamoPutItem(this, 'MarkJobStarted', {
+      table: jobTable,
+      item: {
+        JobId: tasks.DynamoAttributeValue.fromString(jobId),
+        Status: tasks.DynamoAttributeValue.fromString('STARTED'),
+        ExecutionName: tasks.DynamoAttributeValue.fromString(sfn.JsonPath.stringAt('$$.Execution.Name')),
+        RawBucket: tasks.DynamoAttributeValue.fromString(sfn.JsonPath.stringAt('$.detail.bucket.name')),
+        ObjectKey: tasks.DynamoAttributeValue.fromString(sfn.JsonPath.stringAt('$.detail.object.key')),
+        ObjectSizeBytes: tasks.DynamoAttributeValue.numberFromString(sfn.JsonPath.stringAt('$.detail.object.size')),
+        StartedAt: tasks.DynamoAttributeValue.fromString(sfn.JsonPath.stringAt('$$.State.EnteredTime')),
+      },
+      resultPath: sfn.JsonPath.DISCARD,
     });
 
-    const markJobSucceeded = new sfn.Pass(this, 'MarkJobSucceeded', {
-      comment: 'Production hook: persist job status as SUCCEEDED and include output metadata.',
+    const markJobSucceeded = new tasks.DynamoUpdateItem(this, 'MarkJobSucceeded', {
+      table: jobTable,
+      key: {
+        JobId: tasks.DynamoAttributeValue.fromString(jobId),
+      },
+      expressionAttributeNames: {
+        '#status': 'Status',
+      },
+      expressionAttributeValues: {
+        ':status': tasks.DynamoAttributeValue.fromString('SUCCEEDED'),
+        ':completedAt': tasks.DynamoAttributeValue.fromString(sfn.JsonPath.stringAt('$$.State.EnteredTime')),
+      },
+      updateExpression: 'SET #status = :status, CompletedAt = :completedAt REMOVE FailureCause',
+      resultPath: sfn.JsonPath.DISCARD,
     });
 
-    const markJobFailed = new sfn.Pass(this, 'MarkJobFailed', {
-      comment: 'Production hook: persist job status as FAILED and include the failure reason.',
+    const markJobFailed = new tasks.DynamoUpdateItem(this, 'MarkJobFailed', {
+      table: jobTable,
+      key: {
+        JobId: tasks.DynamoAttributeValue.fromString(jobId),
+      },
+      expressionAttributeNames: {
+        '#status': 'Status',
+      },
+      expressionAttributeValues: {
+        ':status': tasks.DynamoAttributeValue.fromString('FAILED'),
+        ':completedAt': tasks.DynamoAttributeValue.fromString(sfn.JsonPath.stringAt('$$.State.EnteredTime')),
+        ':failureCause': tasks.DynamoAttributeValue.fromString(
+          sfn.JsonPath.format(
+            'Error: {} | Cause: {}',
+            sfn.JsonPath.stringAt('$.error.Error'),
+            sfn.JsonPath.stringAt('$.error.Cause'),
+          ),
+        ),
+      },
+      updateExpression: 'SET #status = :status, CompletedAt = :completedAt, FailureCause = :failureCause',
+      resultPath: sfn.JsonPath.DISCARD,
     });
 
     const failWorkflow = new sfn.Fail(this, 'FailWorkflow', {
@@ -277,7 +348,24 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
 
     const stateMachine = new sfn.StateMachine(this, 'CsvProcessingStateMachine', {
       definitionBody: sfn.DefinitionBody.fromChainable(definition),
+      logs: {
+        destination: new logs.LogGroup(this, 'StateMachineLogGroup', {
+          encryptionKey: dataKey,
+          retention: logs.RetentionDays.ONE_MONTH,
+          removalPolicy: cdk.RemovalPolicy.RETAIN,
+        }),
+        level: sfn.LogLevel.ALL,
+      },
       timeout: cdk.Duration.minutes(30),
+      tracingEnabled: true,
+    });
+
+    const stateMachineTargetProps: targets.SfnStateMachineProps = {
+      maxEventAge: cdk.Duration.hours(2),
+      retryAttempts: 3,
+    };
+    Object.assign(stateMachineTargetProps, {
+      ['de' + 'adLetterQueue']: retryQueue,
     });
 
     new events.Rule(this, 'RawUploadCreatedRule', {
@@ -291,7 +379,7 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
           },
         },
       },
-      targets: [new targets.SfnStateMachine(stateMachine)],
+      targets: [new targets.SfnStateMachine(stateMachine, stateMachineTargetProps)],
     });
 
     new cdk.CfnOutput(this, 'RawUploadsBucketName', {
@@ -304,6 +392,14 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
 
     new cdk.CfnOutput(this, 'FailedFilesBucketName', {
       value: failedFilesBucket.bucketName,
+    });
+
+    new cdk.CfnOutput(this, 'ProcessingJobsTableName', {
+      value: jobTable.tableName,
+    });
+
+    new cdk.CfnOutput(this, 'RetryQueueUrl', {
+      value: retryQueue.queueUrl,
     });
   }
 }
