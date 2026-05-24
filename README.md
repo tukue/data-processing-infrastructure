@@ -47,7 +47,7 @@ The implementation is intentionally small enough for a take-home assignment, but
 - **Fargate for long-running work:** Processing takes 5-10 minutes, which is too long for a simple synchronous request path. A one-off Fargate task fits a black-box container processor without requiring a continuously running ECS service.
 - **Step Functions native ECS integration:** The workflow uses the native `ecs:runTask.sync` integration so Step Functions waits for task completion and can apply workflow-level retry and catch handling.
 - **Private task networking:** Fargate tasks run in private subnets with no public IP. Interface VPC endpoints for Secrets Manager, CloudWatch Logs, and ECR keep service traffic within the AWS network. A NAT gateway is still included so the processor image and future external enrichment API can be reached over HTTPS.
-- **Data protection by default:** S3 buckets block public access, enforce SSL, use bucket-owner-enforced object ownership, versioning, and customer-managed KMS encryption.
+- **Data protection by default:** S3 buckets block public access, enforce SSL, use bucket-owner-enforced object ownership, versioning, and customer-managed KMS encryption. Processed and failed buckets use S3 Object Lock in Compliance mode — objects cannot be deleted or overwritten until the retention period expires, even by the root user.
 - **Multipart uploads for large files:** The raw bucket is intended to receive large CSV files through S3 multipart upload. This improves reliability for multi-GB files and lets clients retry individual parts instead of restarting the whole upload.
 - **Job metadata table:** Step Functions persists job status in DynamoDB using a deterministic key based on bucket, object key, and S3 sequencer. This gives operators a small, queryable control plane without introducing a relational database into the assignment.
 - **Failure isolation:** EventBridge target retries are bounded and failed state-machine invocations are sent to `RetryQueue`. Processor failures are captured in the state machine and reflected in the job table before the workflow fails.
@@ -63,6 +63,7 @@ The implementation is intentionally small enough for a take-home assignment, but
 - Public S3 access is blocked on all buckets.
 - Buckets enforce TLS using `enforceSSL`.
 - All S3 buckets (raw, processed, failed) have lifecycle expiration configured independently to control data longevity and PII exposure.
+- Processed and failed buckets use S3 Object Lock in Compliance mode — objects are WORM-protected for the full retention period.
 - All data buckets log access to a dedicated S3 server access log bucket for auditability.
 - S3 access is restricted to only the ECS task role via explicit bucket policy Deny rules.
 - S3, DynamoDB, SQS, Secrets Manager, and CloudWatch Logs use separate customer-managed KMS keys per data tier (storage, operational, secrets) to limit blast radius. All keys have rotation enabled.

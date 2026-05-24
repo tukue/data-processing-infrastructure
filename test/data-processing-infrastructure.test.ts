@@ -303,6 +303,35 @@ test('enables DynamoDB TTL on the job table', () => {
   });
 });
 
+test('enables Object Lock on processed and failed buckets with Compliance mode', () => {
+  const app = new cdk.App();
+  const stack = new DataProcessingInfrastructure.DataProcessingInfrastructureStack(app, 'ObjectLockTestStack', {
+    processorImage: TEST_PROCESSOR_IMAGE,
+    rawFileRetentionDays: 7,
+    processedFileRetentionDays: 14,
+    failedFileRetentionDays: 30,
+    enrichmentApiCidrs: [],
+    jobRetentionDays: 30,
+  });
+  const template = Template.fromStack(stack);
+
+  const buckets = template.findResources('AWS::S3::Bucket');
+  const objectLockBuckets = Object.values(buckets).filter(
+    (b: any) => b.Properties?.ObjectLockConfiguration?.ObjectLockEnabled === 'Enabled'
+  );
+  expect(objectLockBuckets).toHaveLength(2);
+
+  const retentionBuckets = Object.values(buckets).filter(
+    (b: any) => b.Properties?.ObjectLockConfiguration?.Rule?.DefaultRetention?.Mode === 'COMPLIANCE'
+  );
+  expect(retentionBuckets).toHaveLength(2);
+
+  const retentionDays = Object.values(buckets).map(
+    (b: any) => b.Properties?.ObjectLockConfiguration?.Rule?.DefaultRetention?.Days
+  );
+  expect(retentionDays.filter(Boolean)).toEqual(expect.arrayContaining([14, 30]));
+});
+
 test('rejects invalid job retention days', () => {
   const app = new cdk.App();
 
