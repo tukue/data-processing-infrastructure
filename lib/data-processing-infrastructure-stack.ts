@@ -1,14 +1,17 @@
 import * as cdk from 'aws-cdk-lib';
+import * as cloudtrail from 'aws-cdk-lib/aws-cloudtrail';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import * as kms from 'aws-cdk-lib/aws-kms';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as macie from 'aws-cdk-lib/aws-macie';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
+import * as sns from 'aws-cdk-lib/aws-sns';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as sfn from 'aws-cdk-lib/aws-stepfunctions';
 import * as tasks from 'aws-cdk-lib/aws-stepfunctions-tasks';
@@ -17,28 +20,66 @@ import { Construct } from 'constructs';
 export interface DataProcessingInfrastructureStackProps extends cdk.StackProps {
   processorImage: string;
   rawFileRetentionDays: number;
+  processedFileRetentionDays: number;
+  failedFileRetentionDays: number;
+  enrichmentApiCidrs: string[];
+  jobRetentionDays: number;
 }
 
 export class DataProcessingInfrastructureStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: DataProcessingInfrastructureStackProps) {
     super(scope, id, props);
 
-    const dataKey = new kms.Key(this, 'DataProcessingKey', {
-      alias: 'alias/data-processing-infrastructure',
-      description: 'Encrypts S3 objects and application secrets for the CSV processing pipeline.',
+    const storageKey = new kms.Key(this, 'StorageKey', {
+      alias: 'alias/data-processing-storage',
+      description: 'Encrypts S3 objects (raw, processed, failed, access logs).',
       enableKeyRotation: true,
       removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    const operationalKey = new kms.Key(this, 'OperationalKey', {
+      alias: 'alias/data-processing-operational',
+      description: 'Encrypts operational data (DynamoDB, SQS, CloudWatch Logs, CloudTrail, SNS).',
+      enableKeyRotation: true,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    const secretsKey = new kms.Key(this, 'SecretsKey', {
+      alias: 'alias/data-processing-secrets',
+      description: 'Encrypts Secrets Manager secrets.',
+      enableKeyRotation: true,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    const accessLogBucket = new s3.Bucket(this, 'AccessLogBucket', {
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      bucketKeyEnabled: true,
+      encryption: s3.BucketEncryption.KMS,
+      encryptionKey: storageKey,
+      enforceSSL: true,
+      objectOwnership: s3.ObjectOwnership.OBJECT_WRITER,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      lifecycleRules: [
+        {
+          expiration: cdk.Duration.days(365),
+          transitions: [
+            { storageClass: s3.StorageClass.GLACIER, transitionAfter: cdk.Duration.days(90) },
+          ],
+        },
+      ],
     });
 
     const rawUploadsBucket = new s3.Bucket(this, 'RawUploadsBucket', {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       bucketKeyEnabled: true,
       encryption: s3.BucketEncryption.KMS,
-      encryptionKey: dataKey,
+      encryptionKey: storageKey,
       enforceSSL: true,
       eventBridgeEnabled: true,
       objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
       removalPolicy: cdk.RemovalPolicy.RETAIN,
+      serverAccessLogsBucket: accessLogBucket,
+      serverAccessLogsPrefix: 'raw-uploads/',
       lifecycleRules: [
         {
           abortIncompleteMultipartUploadAfter: cdk.Duration.days(1),
@@ -53,10 +94,18 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       bucketKeyEnabled: true,
       encryption: s3.BucketEncryption.KMS,
-      encryptionKey: dataKey,
+      encryptionKey: storageKey,
       enforceSSL: true,
       objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
       removalPolicy: cdk.RemovalPolicy.RETAIN,
+      serverAccessLogsBucket: accessLogBucket,
+      serverAccessLogsPrefix: 'processed/',
+      lifecycleRules: [
+        {
+          expiration: cdk.Duration.days(props.processedFileRetentionDays),
+          noncurrentVersionExpiration: cdk.Duration.days(props.processedFileRetentionDays),
+        },
+      ],
       versioned: true,
     });
 
@@ -64,16 +113,18 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       bucketKeyEnabled: true,
       encryption: s3.BucketEncryption.KMS,
-      encryptionKey: dataKey,
+      encryptionKey: storageKey,
       enforceSSL: true,
-      lifecycleRules: [
-        {
-          expiration: cdk.Duration.days(props.rawFileRetentionDays),
-          noncurrentVersionExpiration: cdk.Duration.days(props.rawFileRetentionDays),
-        },
-      ],
       objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
       removalPolicy: cdk.RemovalPolicy.RETAIN,
+      serverAccessLogsBucket: accessLogBucket,
+      serverAccessLogsPrefix: 'failed/',
+      lifecycleRules: [
+        {
+          expiration: cdk.Duration.days(props.failedFileRetentionDays),
+          noncurrentVersionExpiration: cdk.Duration.days(props.failedFileRetentionDays),
+        },
+      ],
       versioned: true,
     });
 
@@ -84,23 +135,24 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
       },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
-      encryptionKey: dataKey,
+      encryptionKey: operationalKey,
       pointInTimeRecoverySpecification: {
         pointInTimeRecoveryEnabled: true,
       },
+      timeToLiveAttribute: 'Ttl',
       removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
 
     const retryQueue = new sqs.Queue(this, 'RetryQueue', {
       encryption: sqs.QueueEncryption.KMS,
-      encryptionMasterKey: dataKey,
+      encryptionMasterKey: operationalKey,
       enforceSSL: true,
       retentionPeriod: cdk.Duration.days(14),
     });
 
     const databaseCredentials = new secretsmanager.Secret(this, 'DatabaseCredentialsSecret', {
       description: 'Placeholder database credentials for the CSV processor.',
-      encryptionKey: dataKey,
+      encryptionKey: secretsKey,
       generateSecretString: {
         secretStringTemplate: JSON.stringify({
           username: 'processor_user',
@@ -114,7 +166,7 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
 
     const externalApiKey = new secretsmanager.Secret(this, 'ExternalApiKeySecret', {
       description: 'Placeholder external enrichment API key for the CSV processor.',
-      encryptionKey: dataKey,
+      encryptionKey: secretsKey,
       generateSecretString: {
         secretStringTemplate: JSON.stringify({
           provider: 'customer-enrichment-api',
@@ -144,6 +196,42 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
       service: ec2.GatewayVpcEndpointAwsService.S3,
     });
 
+    const vpcEndpointSecurityGroup = new ec2.SecurityGroup(this, 'VpcEndpointSecurityGroup', {
+      vpc,
+      allowAllOutbound: false,
+      description: 'Controls inbound HTTPS access to VPC interface endpoints.',
+    });
+    vpcEndpointSecurityGroup.addIngressRule(
+      ec2.Peer.ipv4(vpc.vpcCidrBlock),
+      ec2.Port.tcp(443),
+      'Allow HTTPS from the VPC to interface endpoints.',
+    );
+
+    vpc.addInterfaceEndpoint('SecretsManagerEndpoint', {
+      service: ec2.InterfaceVpcEndpointAwsService.SECRETS_MANAGER,
+      subnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+      securityGroups: [vpcEndpointSecurityGroup],
+      privateDnsEnabled: true,
+    });
+    vpc.addInterfaceEndpoint('CloudWatchLogsEndpoint', {
+      service: ec2.InterfaceVpcEndpointAwsService.CLOUDWATCH_LOGS,
+      subnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+      securityGroups: [vpcEndpointSecurityGroup],
+      privateDnsEnabled: true,
+    });
+    vpc.addInterfaceEndpoint('EcrDkrEndpoint', {
+      service: ec2.InterfaceVpcEndpointAwsService.ECR_DOCKER,
+      subnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+      securityGroups: [vpcEndpointSecurityGroup],
+      privateDnsEnabled: true,
+    });
+    vpc.addInterfaceEndpoint('EcrApiEndpoint', {
+      service: ec2.InterfaceVpcEndpointAwsService.ECR,
+      subnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+      securityGroups: [vpcEndpointSecurityGroup],
+      privateDnsEnabled: true,
+    });
+
     const taskSecurityGroup = new ec2.SecurityGroup(this, 'ProcessorTaskSecurityGroup', {
       vpc,
       allowAllOutbound: false,
@@ -161,17 +249,24 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
       'Allow DNS over UDP to the VPC resolver.',
     );
     taskSecurityGroup.addEgressRule(
-      ec2.Peer.anyIpv4(),
+      ec2.Peer.ipv4(vpc.vpcCidrBlock),
       ec2.Port.tcp(443),
-      'Allow HTTPS to AWS APIs and the external enrichment API.',
+      'Allow HTTPS to VPC CIDR for interface endpoint traffic (Secrets Manager, CloudWatch, ECR).',
     );
+    for (const cidr of props.enrichmentApiCidrs) {
+      taskSecurityGroup.addEgressRule(
+        ec2.Peer.ipv4(cidr),
+        ec2.Port.tcp(443),
+        `Allow HTTPS to enrichment API at ${cidr}.`,
+      );
+    }
 
     const cluster = new ecs.Cluster(this, 'ProcessingCluster', {
       vpc,
     });
 
     const logGroup = new logs.LogGroup(this, 'ProcessorLogGroup', {
-      encryptionKey: dataKey,
+      encryptionKey: operationalKey,
       retention: logs.RetentionDays.ONE_MONTH,
       removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
@@ -182,9 +277,15 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
     });
 
     const macieFindingsLogGroup = new logs.LogGroup(this, 'MacieFindingsLogGroup', {
-      encryptionKey: dataKey,
+      encryptionKey: operationalKey,
       retention: logs.RetentionDays.ONE_MONTH,
       removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    const macieAlertTopic = new sns.Topic(this, 'MacieAlertTopic', {
+      displayName: 'macie-findings-alert',
+      masterKey: operationalKey,
+      enforceSSL: true,
     });
 
     const macieFindingsRule = new events.Rule(this, 'MacieFindingsRule', {
@@ -193,7 +294,10 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
         source: ['aws.macie'],
         detailType: ['Macie Finding'],
       },
-      targets: [new targets.CloudWatchLogGroup(macieFindingsLogGroup)],
+      targets: [
+        new targets.CloudWatchLogGroup(macieFindingsLogGroup),
+        new targets.SnsTopic(macieAlertTopic),
+      ],
     });
     macieFindingsRule.node.addDependency(macieSession);
 
@@ -214,16 +318,38 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
 
     container.addEnvironment('PROCESSED_BUCKET', processedFilesBucket.bucketName);
     container.addEnvironment('FAILED_BUCKET', failedFilesBucket.bucketName);
-    container.addEnvironment('DATABASE_SECRET_ARN', databaseCredentials.secretArn);
-    container.addEnvironment('EXTERNAL_API_SECRET_ARN', externalApiKey.secretArn);
 
-    // Least-privilege intent: the task can read only new raw inputs, write only
-    // outputs/failures, and read only the two application secrets it needs.
+    // Secrets are injected by the ECS agent at task start, not stored in the
+    // task definition or passed as plain-text environment variables.
+    container.addSecret('DATABASE_CREDENTIALS', ecs.Secret.fromSecretsManager(databaseCredentials));
+    container.addSecret('EXTERNAL_API_CREDENTIALS', ecs.Secret.fromSecretsManager(externalApiKey));
+
+    // Least-privilege intent: the task can read only new raw inputs and write
+    // outputs/failures. Secrets are retrieved by the ECS execution role.
     rawUploadsBucket.grantRead(taskDefinition.taskRole);
     processedFilesBucket.grantWrite(taskDefinition.taskRole);
     failedFilesBucket.grantWrite(taskDefinition.taskRole);
-    databaseCredentials.grantRead(taskDefinition.taskRole);
-    externalApiKey.grantRead(taskDefinition.taskRole);
+
+    // Deny object access to any principal other than the task role.
+    // Scoped to object resources so CloudFormation can still manage bucket properties.
+    const denyNonTaskRoleAccess = (bucket: s3.Bucket, actions: string[]) =>
+      bucket.addToResourcePolicy(
+        new iam.PolicyStatement({
+          effect: iam.Effect.DENY,
+          principals: [new iam.AnyPrincipal()],
+          actions,
+          resources: [bucket.arnForObjects('*')],
+          conditions: {
+            ArnNotEquals: {
+              'aws:PrincipalArn': taskDefinition.taskRole.roleArn,
+            },
+          },
+        }),
+      );
+
+    denyNonTaskRoleAccess(rawUploadsBucket, ['s3:GetObject', 's3:GetObjectVersion']);
+    denyNonTaskRoleAccess(processedFilesBucket, ['s3:GetObject', 's3:GetObjectVersion', 's3:PutObject', 's3:DeleteObject']);
+    denyNonTaskRoleAccess(failedFilesBucket, ['s3:GetObject', 's3:GetObjectVersion', 's3:PutObject', 's3:DeleteObject']);
 
     const runProcessorTask = new tasks.EcsRunTask(this, 'RunCsvProcessorTask', {
       integrationPattern: sfn.IntegrationPattern.RUN_JOB,
@@ -254,6 +380,21 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
           ],
         },
       ],
+      resultPath: '$.taskResult',
+    });
+
+    // Compute TTL epoch values at synth time. Items will expire N days after
+    // deployment. In production, the processor should set per-item TTL instead.
+    const neverTtl = String(4102444800); // year 2100 — effectively never
+    const expireTtl = String(
+      Math.floor(Date.now() / 1000) + props.jobRetentionDays * 86400,
+    );
+
+    const injectTtl = new sfn.Pass(this, 'InjectTtl', {
+      parameters: {
+        'ttl': expireTtl,
+        'detail.$': '$.detail',
+      },
     });
 
     const jobId = sfn.JsonPath.format(
@@ -273,6 +414,8 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
         ObjectKey: tasks.DynamoAttributeValue.fromString(sfn.JsonPath.stringAt('$.detail.object.key')),
         ObjectSizeBytes: tasks.DynamoAttributeValue.numberFromString(sfn.JsonPath.stringAt('$.detail.object.size')),
         StartedAt: tasks.DynamoAttributeValue.fromString(sfn.JsonPath.stringAt('$$.State.EnteredTime')),
+        Ttl: tasks.DynamoAttributeValue.numberFromString(neverTtl),
+        RetentionDays: tasks.DynamoAttributeValue.numberFromString(String(props.jobRetentionDays)),
       },
       resultPath: sfn.JsonPath.DISCARD,
     });
@@ -284,12 +427,14 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
       },
       expressionAttributeNames: {
         '#status': 'Status',
+        '#ttl': 'Ttl',
       },
       expressionAttributeValues: {
         ':status': tasks.DynamoAttributeValue.fromString('SUCCEEDED'),
         ':completedAt': tasks.DynamoAttributeValue.fromString(sfn.JsonPath.stringAt('$$.State.EnteredTime')),
+        ':ttl': tasks.DynamoAttributeValue.numberFromString(sfn.JsonPath.stringAt('$.ttl')),
       },
-      updateExpression: 'SET #status = :status, CompletedAt = :completedAt REMOVE FailureCause',
+      updateExpression: 'SET #status = :status, CompletedAt = :completedAt, #ttl = :ttl REMOVE FailureCause',
       resultPath: sfn.JsonPath.DISCARD,
     });
 
@@ -300,6 +445,7 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
       },
       expressionAttributeNames: {
         '#status': 'Status',
+        '#ttl': 'Ttl',
       },
       expressionAttributeValues: {
         ':status': tasks.DynamoAttributeValue.fromString('FAILED'),
@@ -311,8 +457,9 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
             sfn.JsonPath.stringAt('$.error.Cause'),
           ),
         ),
+        ':ttl': tasks.DynamoAttributeValue.numberFromString(sfn.JsonPath.stringAt('$.ttl')),
       },
-      updateExpression: 'SET #status = :status, CompletedAt = :completedAt, FailureCause = :failureCause',
+      updateExpression: 'SET #status = :status, CompletedAt = :completedAt, FailureCause = :failureCause, #ttl = :ttl',
       resultPath: sfn.JsonPath.DISCARD,
     });
 
@@ -322,7 +469,8 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
 
     markJobFailed.next(failWorkflow);
 
-    const definition = markJobStarted
+    const definition = injectTtl
+      .next(markJobStarted)
       .next(
         runProcessorTask
           .addRetry({
@@ -341,14 +489,27 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
       )
       .next(markJobSucceeded);
 
+    const stateMachineLogGroup = new logs.LogGroup(this, 'StateMachineLogGroup', {
+      encryptionKey: operationalKey,
+      retention: logs.RetentionDays.ONE_MONTH,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    const stateMachineRole = new iam.Role(this, 'StateMachineExecutionRole', {
+      assumedBy: new iam.ServicePrincipal('states.amazonaws.com'),
+      description: 'Scoped execution role for the CSV processing state machine.',
+    });
+    jobTable.grantWriteData(stateMachineRole);
+    stateMachineLogGroup.grantWrite(stateMachineRole);
+    stateMachineRole.addManagedPolicy(
+      iam.ManagedPolicy.fromAwsManagedPolicyName('AWSXRayDaemonWriteAccess'),
+    );
+
     const stateMachine = new sfn.StateMachine(this, 'CsvProcessingStateMachine', {
       definitionBody: sfn.DefinitionBody.fromChainable(definition),
+      role: stateMachineRole,
       logs: {
-        destination: new logs.LogGroup(this, 'StateMachineLogGroup', {
-          encryptionKey: dataKey,
-          retention: logs.RetentionDays.ONE_MONTH,
-          removalPolicy: cdk.RemovalPolicy.RETAIN,
-        }),
+        destination: stateMachineLogGroup,
         level: sfn.LogLevel.ALL,
       },
       timeout: cdk.Duration.minutes(30),
@@ -358,6 +519,18 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
     const stateMachineTargetProps: targets.SfnStateMachineProps = {
       maxEventAge: cdk.Duration.hours(2),
       retryAttempts: 3,
+      input: events.RuleTargetInput.fromObject({
+        detail: {
+          bucket: {
+            name: events.EventField.fromPath('$.detail.bucket.name'),
+          },
+          object: {
+            key: events.EventField.fromPath('$.detail.object.key'),
+            size: events.EventField.fromPath('$.detail.object.size'),
+            sequencer: events.EventField.fromPath('$.detail.object.sequencer'),
+          },
+        },
+      }),
     };
     Object.assign(stateMachineTargetProps, {
       ['de' + 'adLetterQueue']: retryQueue,
@@ -377,24 +550,25 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
       targets: [new targets.SfnStateMachine(stateMachine, stateMachineTargetProps)],
     });
 
-    new cdk.CfnOutput(this, 'RawUploadsBucketName', {
-      value: rawUploadsBucket.bucketName,
+    const cloudTrailLogGroup = new logs.LogGroup(this, 'CloudTrailLogGroup', {
+      encryptionKey: operationalKey,
+      retention: logs.RetentionDays.ONE_MONTH,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
 
-    new cdk.CfnOutput(this, 'ProcessedFilesBucketName', {
-      value: processedFilesBucket.bucketName,
-    });
-
-    new cdk.CfnOutput(this, 'FailedFilesBucketName', {
-      value: failedFilesBucket.bucketName,
-    });
-
-    new cdk.CfnOutput(this, 'ProcessingJobsTableName', {
-      value: jobTable.tableName,
-    });
-
-    new cdk.CfnOutput(this, 'RetryQueueUrl', {
-      value: retryQueue.queueUrl,
-    });
+    new cloudtrail.Trail(this, 'DataEventTrail', {
+      encryptionKey: operationalKey,
+      sendToCloudWatchLogs: true,
+      cloudWatchLogGroup: cloudTrailLogGroup,
+      isMultiRegionTrail: false,
+      managementEvents: cloudtrail.ReadWriteType.NONE,
+    }).addS3EventSelector(
+      [
+        { bucket: rawUploadsBucket },
+        { bucket: processedFilesBucket },
+        { bucket: failedFilesBucket },
+      ],
+      { readWriteType: cloudtrail.ReadWriteType.ALL },
+    );
   }
 }
