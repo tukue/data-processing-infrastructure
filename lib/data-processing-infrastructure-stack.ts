@@ -53,7 +53,6 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
 
     const accessLogBucket = new s3.Bucket(this, 'AccessLogBucket', {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      bucketKeyEnabled: true,
       encryption: s3.BucketEncryption.KMS,
       encryptionKey: storageKey,
       enforceSSL: true,
@@ -71,7 +70,6 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
 
     const rawUploadsBucket = new s3.Bucket(this, 'RawUploadsBucket', {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      bucketKeyEnabled: true,
       encryption: s3.BucketEncryption.KMS,
       encryptionKey: storageKey,
       enforceSSL: true,
@@ -92,7 +90,6 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
 
     const processedFilesBucket = new s3.Bucket(this, 'ProcessedFilesBucket', {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      bucketKeyEnabled: true,
       encryption: s3.BucketEncryption.KMS,
       encryptionKey: storageKey,
       enforceSSL: true,
@@ -113,7 +110,6 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
 
     const failedFilesBucket = new s3.Bucket(this, 'FailedFilesBucket', {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      bucketKeyEnabled: true,
       encryption: s3.BucketEncryption.KMS,
       encryptionKey: storageKey,
       enforceSSL: true,
@@ -387,9 +383,6 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
       resultPath: '$.taskResult',
     });
 
-    // Compute TTL epoch values at synth time. Items will expire N days after
-    // deployment. In production, the processor should set per-item TTL instead.
-    const neverTtl = String(4102444800); // year 2100 — effectively never
     const expireTtl = String(
       Math.floor(Date.now() / 1000) + props.jobRetentionDays * 86400,
     );
@@ -418,7 +411,7 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
         ObjectKey: tasks.DynamoAttributeValue.fromString(sfn.JsonPath.stringAt('$.detail.object.key')),
         ObjectSizeBytes: tasks.DynamoAttributeValue.numberFromString(sfn.JsonPath.stringAt('$.detail.object.size')),
         StartedAt: tasks.DynamoAttributeValue.fromString(sfn.JsonPath.stringAt('$$.State.EnteredTime')),
-        Ttl: tasks.DynamoAttributeValue.numberFromString(neverTtl),
+        Ttl: tasks.DynamoAttributeValue.numberFromString(sfn.JsonPath.stringAt('$.ttl')),
         RetentionDays: tasks.DynamoAttributeValue.numberFromString(String(props.jobRetentionDays)),
       },
       resultPath: sfn.JsonPath.DISCARD,
