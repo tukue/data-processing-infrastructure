@@ -35,3 +35,6 @@ jobs:
 
       - name: CDK synth
         run: npx cdk synth
+
+      - name: CDK Nag security checks
+        run: CDK_NAG=1 npx cdk synth -c processorImage=000000000000.dkr.ecr.us-east-1.amazonaws.com/placeholder@sha256:0000000000000000000000000000000000000000000000000000000000000000
