@@ -182,7 +182,7 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
     // Tasks run in private subnets. NAT is included because the placeholder public
     // image and external enrichment API need outbound HTTPS access.
     const vpc = new ec2.Vpc(this, 'ProcessingVpc', {
-      maxAzs: 2,
+      maxAzs: 3,
       natGateways: 1,
       subnetConfiguration: [
         {
