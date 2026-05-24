@@ -55,8 +55,8 @@ The implementation is intentionally small enough for a take-home assignment, but
 - **PII visibility with Macie:** Amazon Macie is enabled for the account/region and Macie findings are captured through EventBridge into both an encrypted CloudWatch log group and an SNS topic for operational alerting.
 - **Per-bucket data retention:** Raw uploads, processed files, and failed processing artifacts each have their own configurable retention period via CDK context or environment variables. Raw and failed files default to 7 days because they can contain unsanitized PII. Processed files default to 7 days as well but can be extended independently for audit or reprocessing needs.
 - **Least-privilege task role:** The task role can read raw inputs and write processed/failed outputs. Secrets are injected by the ECS agent via ECS Secrets — the task role has no `secretsmanager:GetValue` permission.
-- **Portable deployment:** Account, region, and raw retention are configurable through environment variables or CDK context so the same code can deploy to another AWS account or region without source edits.
-- **Configurable processor image:** The stack does not hardcode the processor container. Deployments provide an image URI through `PROCESSOR_IMAGE` or `-c processorImage=...`, preferably a pinned private ECR image with scanning and release controls.
+- **Portable deployment:** Account, region, retention periods, processor image, enrichment API CIDRs, and job TTL are all configurable through environment variables or CDK context so the same code can deploy to another AWS account or region without source edits.
+- **Configurable processor image:** The stack does not hardcode the processor container. Deployments provide a digest-pinned image URI through `PROCESSOR_IMAGE` or `-c processorImage=...`. Tags like `:latest` are rejected at synthesis time.
 
 ## Security Considerations
 
@@ -126,7 +126,7 @@ cdk deploy
 ```bash
 export AWS_ACCOUNT_ID=<your-account-id>
 export AWS_REGION=<aws-region>
-export PROCESSOR_IMAGE=<account-id>.dkr.ecr.<aws-region>.amazonaws.com/csv-processor:<tag>
+export PROCESSOR_IMAGE=<account-id>.dkr.ecr.<aws-region>.amazonaws.com/csv-processor@sha256:<hex>
 cdk bootstrap aws://$AWS_ACCOUNT_ID/$AWS_REGION
 cdk deploy
 ```
@@ -172,6 +172,23 @@ cdk deploy -c enrichmentApiCidrs=203.0.113.0/24,198.51.100.0/24
 # Via environment variable
 export ENRICHMENT_API_CIDRS=203.0.113.0/24,198.51.100.0/24
 cdk deploy
+```
+
+Job records in DynamoDB expire after a configurable number of days (default 30):
+
+```bash
+# Via CDK context
+cdk deploy -c jobRetentionDays=60
+
+# Via environment variable
+export JOB_RETENTION_DAYS=60
+cdk deploy
+```
+
+Run CDK Nag security checks by setting `CDK_NAG=1`:
+
+```bash
+CDK_NAG=1 npx cdk synth
 ```
 
 ## CI/CD
