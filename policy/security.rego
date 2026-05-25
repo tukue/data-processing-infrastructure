@@ -12,6 +12,7 @@ deny_kms_key_rotation_disabled contains msg if {
 deny_security_group_public_ingress contains msg if {
     some resource in input.Resources
     resource.Type == "AWS::EC2::SecurityGroup"
+    resource.Properties.SecurityGroupIngress
     rule := resource.Properties.SecurityGroupIngress[_]
     rule.CidrIp == "0.0.0.0/0"
     msg := sprintf("Security group %v allows public ingress from 0.0.0.0/0.", [resource.Properties.GroupDescription])
@@ -28,6 +29,6 @@ deny_ecs_task_definition_no_readonly_root contains msg if {
     some resource in input.Resources
     resource.Type == "AWS::ECS::TaskDefinition"
     def := resource.Properties.ContainerDefinitions[_]
-    def.ReadonlyRootFilesystem == false
+    not def.ReadonlyRootFilesystem
     msg := sprintf("ECS container %v does not have readonlyRootFilesystem enabled.", [def.Name])
 }

@@ -6,7 +6,8 @@ deny_dynamodb_no_pitr contains msg if {
     some resource in input.Resources
     resource.Type == "AWS::DynamoDB::Table"
     not resource.Properties.PointInTimeRecoverySpecification
-    msg := sprintf("DynamoDB table %v does not have PITR enabled.", [resource.Properties.KeySchema[0].AttributeName])
+    resource.Properties.TableName
+    msg := sprintf("DynamoDB table %v does not have PITR enabled.", [resource.Properties.TableName])
 }
 
 deny_sqs_no_encryption contains msg if {

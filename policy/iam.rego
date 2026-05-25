@@ -6,8 +6,16 @@ deny_iam_policy_star_action contains msg if {
     some resource in input.Resources
     resource.Type == "AWS::IAM::Policy"
     statement := resource.Properties.PolicyDocument.Statement[_]
-    statement.Action[_] == "*"
+    action_is_wildcard(statement)
     msg := sprintf("IAM policy %v uses wildcard action '*'. Use scoped actions instead.", [resource.Properties.PolicyName])
+}
+
+action_is_wildcard(statement) if {
+    statement.Action == "*"
+}
+
+action_is_wildcard(statement) if {
+    statement.Action[_] == "*"
 }
 
 deny_iam_role_managed_policy_admin contains msg if {

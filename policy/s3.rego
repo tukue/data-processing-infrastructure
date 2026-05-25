@@ -19,6 +19,7 @@ deny_s3_no_block_public_access contains msg if {
 deny_s3_bucket_acl_not_enforced contains msg if {
     some resource in input.Resources
     resource.Type == "AWS::S3::Bucket"
+    resource.Properties.OwnershipControls
     resource.Properties.OwnershipControls.Rules[_].ObjectOwnership == "ObjectWriter"
     msg := sprintf("S3 bucket %v uses ObjectWriter ownership; prefer BucketOwnerEnforced.", [resource.Properties.BucketName])
 }
