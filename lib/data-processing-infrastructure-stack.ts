@@ -554,7 +554,19 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
 
+    const cloudTrailBucket = new s3.Bucket(this, 'CloudTrailBucket', {
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      encryption: s3.BucketEncryption.KMS,
+      encryptionKey: storageKey,
+      enforceSSL: true,
+      objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      serverAccessLogsBucket: accessLogBucket,
+      serverAccessLogsPrefix: 'cloudtrail/',
+    });
+
     new cloudtrail.Trail(this, 'DataEventTrail', {
+      bucket: cloudTrailBucket,
       encryptionKey: operationalKey,
       sendToCloudWatchLogs: true,
       cloudWatchLogGroup: cloudTrailLogGroup,

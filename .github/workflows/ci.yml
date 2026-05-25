@@ -34,7 +34,15 @@ jobs:
         run: npm test -- --runInBand
 
       - name: CDK synth
-        run: npx cdk synth --no-notices -c processorImage=000000000000.dkr.ecr.us-east-1.amazonaws.com/csv-processor@sha256:0000000000000000000000000000000000000000000000000000000000000000
+        run: npx cdk synth --no-notices --output cdk.out -c processorImage=000000000000.dkr.ecr.us-east-1.amazonaws.com/csv-processor@sha256:0000000000000000000000000000000000000000000000000000000000000000
         env:
           CDK_DEFAULT_ACCOUNT: 000000000000
           CDK_DEFAULT_REGION: us-east-1
+
+      - name: Install OPA
+        run: |
+          sudo curl -sL https://github.com/open-policy-agent/opa/releases/download/v1.3.0/opa_linux_amd64_static -o /usr/local/bin/opa
+          sudo chmod 755 /usr/local/bin/opa
+
+      - name: OPA policy validation
+        run: opa eval --fail-defined --format pretty --data policy --input cdk.out/DataProcessingInfrastructureStack.template.json "data.cdk.deny[_]"
