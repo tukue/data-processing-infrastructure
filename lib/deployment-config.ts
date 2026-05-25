@@ -14,8 +14,8 @@ export function resolveDeploymentConfig(
   app: cdk.App,
   environment: NodeJS.ProcessEnv = process.env,
 ): DeploymentConfig {
-  const account = environment.AWS_ACCOUNT_ID ?? environment.CDK_DEFAULT_ACCOUNT;
-  const region = environment.AWS_REGION ?? environment.CDK_DEFAULT_REGION;
+  const account = environment.AWS_ACCOUNT_ID;
+  const region = environment.AWS_REGION;
   const rawFileRetentionDays = Number(
     app.node.tryGetContext('rawFileRetentionDays') ?? environment.RAW_FILE_RETENTION_DAYS ?? '7',
   );
@@ -73,7 +73,7 @@ export function resolveDeploymentConfig(
   }
 
   return {
-    env: account || region ? { account, region } : undefined,
+    env: account && region ? { account, region } : undefined,
     processorImage,
     rawFileRetentionDays,
     processedFileRetentionDays,

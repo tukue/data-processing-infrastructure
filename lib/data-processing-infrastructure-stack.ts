@@ -324,6 +324,18 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
     container.addSecret('DATABASE_CREDENTIALS', ecs.Secret.fromSecretsManager(databaseCredentials));
     container.addSecret('EXTERNAL_API_CREDENTIALS', ecs.Secret.fromSecretsManager(externalApiKey));
 
+    // Grant ECR pull permissions so the ECS agent can authenticate and pull
+    // the processor image from ECR at task startup.
+    taskDefinition.executionRole?.addToPrincipalPolicy(new iam.PolicyStatement({
+      actions: [
+        'ecr:GetAuthorizationToken',
+        'ecr:BatchCheckLayerAvailability',
+        'ecr:GetDownloadUrlForLayer',
+        'ecr:BatchGetImage',
+      ],
+      resources: ['*'],
+    }));
+
     // Least-privilege intent: the task can read only new raw inputs and write
     // outputs/failures. Secrets are retrieved by the ECS execution role.
     rawUploadsBucket.grantRead(taskDefinition.taskRole);

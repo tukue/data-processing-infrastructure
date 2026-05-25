@@ -200,19 +200,14 @@ test('resolves deployment account, region, and retention from environment', () =
   });
 });
 
-test('falls back to CDK default account and region from the active AWS profile', () => {
+test('omits env when neither AWS_ACCOUNT_ID nor AWS_REGION are set', () => {
   const app = new cdk.App();
   const config = resolveDeploymentConfig(app, {
-    CDK_DEFAULT_ACCOUNT: 'profile-account',
-    CDK_DEFAULT_REGION: 'profile-region',
     PROCESSOR_IMAGE: TEST_PROCESSOR_IMAGE,
   });
 
   expect(config).toEqual({
-    env: {
-      account: 'profile-account',
-      region: 'profile-region',
-    },
+    env: undefined,
     processorImage: TEST_PROCESSOR_IMAGE,
     rawFileRetentionDays: 7,
     processedFileRetentionDays: 7,
