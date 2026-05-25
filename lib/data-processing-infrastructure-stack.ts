@@ -139,7 +139,6 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
       pointInTimeRecoverySpecification: {
         pointInTimeRecoveryEnabled: true,
       },
-      timeToLiveAttribute: 'Ttl',
       removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
 
@@ -395,13 +394,8 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
       resultPath: '$.taskResult',
     });
 
-    const expireTtl = String(
-      Math.floor(Date.now() / 1000) + props.jobRetentionDays * 86400,
-    );
-
     const injectTtl = new sfn.Pass(this, 'InjectTtl', {
       parameters: {
-        'ttl': expireTtl,
         'detail.$': '$.detail',
       },
     });
@@ -423,7 +417,6 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
         ObjectKey: tasks.DynamoAttributeValue.fromString(sfn.JsonPath.stringAt('$.detail.object.key')),
         ObjectSizeBytes: tasks.DynamoAttributeValue.numberFromString(sfn.JsonPath.stringAt('$.detail.object.size')),
         StartedAt: tasks.DynamoAttributeValue.fromString(sfn.JsonPath.stringAt('$$.State.EnteredTime')),
-        Ttl: tasks.DynamoAttributeValue.numberFromString(sfn.JsonPath.stringAt('$.ttl')),
         RetentionDays: tasks.DynamoAttributeValue.numberFromString(String(props.jobRetentionDays)),
       },
       resultPath: sfn.JsonPath.DISCARD,
@@ -436,14 +429,12 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
       },
       expressionAttributeNames: {
         '#status': 'Status',
-        '#ttl': 'Ttl',
       },
       expressionAttributeValues: {
         ':status': tasks.DynamoAttributeValue.fromString('SUCCEEDED'),
         ':completedAt': tasks.DynamoAttributeValue.fromString(sfn.JsonPath.stringAt('$$.State.EnteredTime')),
-        ':ttl': tasks.DynamoAttributeValue.numberFromString(sfn.JsonPath.stringAt('$.ttl')),
       },
-      updateExpression: 'SET #status = :status, CompletedAt = :completedAt, #ttl = :ttl REMOVE FailureCause',
+      updateExpression: 'SET #status = :status, CompletedAt = :completedAt REMOVE FailureCause',
       resultPath: sfn.JsonPath.DISCARD,
     });
 
@@ -454,7 +445,6 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
       },
       expressionAttributeNames: {
         '#status': 'Status',
-        '#ttl': 'Ttl',
       },
       expressionAttributeValues: {
         ':status': tasks.DynamoAttributeValue.fromString('FAILED'),
@@ -466,9 +456,8 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
             sfn.JsonPath.stringAt('$.error.Cause'),
           ),
         ),
-        ':ttl': tasks.DynamoAttributeValue.numberFromString(sfn.JsonPath.stringAt('$.ttl')),
       },
-      updateExpression: 'SET #status = :status, CompletedAt = :completedAt, FailureCause = :failureCause, #ttl = :ttl',
+      updateExpression: 'SET #status = :status, CompletedAt = :completedAt, FailureCause = :failureCause',
       resultPath: sfn.JsonPath.DISCARD,
     });
 

@@ -278,7 +278,7 @@ test('requires a processor image', () => {
   );
 });
 
-test('enables DynamoDB TTL on the job table', () => {
+test('DynamoDB table is created without TTL', () => {
   const app = new cdk.App();
   const stack = new DataProcessingInfrastructure.DataProcessingInfrastructureStack(app, 'TtlTestStack', {
     processorImage: TEST_PROCESSOR_IMAGE,
@@ -291,10 +291,10 @@ test('enables DynamoDB TTL on the job table', () => {
   const template = Template.fromStack(stack);
 
   template.hasResourceProperties('AWS::DynamoDB::Table', {
-    TimeToLiveSpecification: {
-      AttributeName: 'Ttl',
-      Enabled: true,
+    PointInTimeRecoverySpecification: {
+      PointInTimeRecoveryEnabled: true,
     },
+    BillingMode: 'PAY_PER_REQUEST',
   });
 });
 
