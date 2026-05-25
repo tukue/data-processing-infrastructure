@@ -208,5 +208,6 @@ GitHub Actions runs a CI workflow on pull requests and pushes to `main`:
 - `npm run build`
 - `npm test -- --runInBand`
 - `npx cdk synth`
+- `opa eval` against the synthesized template for IAM, S3, networking, logging, compute, and data guardrails
 
 The workflow intentionally does not deploy yet. For deployment automation, add a separate workflow using GitHub OIDC and an AWS IAM role scoped to this stack instead of storing long-lived AWS access keys in GitHub secrets.
