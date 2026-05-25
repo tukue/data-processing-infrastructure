@@ -6,7 +6,7 @@ deny_dynamodb_no_pitr contains msg if {
     some name
     resource := input.Resources[name]
     resource.Type == "AWS::DynamoDB::Table"
-    not resource.Properties.PointInTimeRecoverySpecification
+    not pitr_enabled(resource)
     msg := sprintf("DynamoDB table %v does not have PITR enabled.", [resource_name(name, resource)])
 }
 
@@ -24,6 +24,10 @@ deny_cloudtrail_not_logging contains msg if {
     resource.Type == "AWS::CloudTrail::Trail"
     not resource.Properties.IsLogging
     msg := sprintf("CloudTrail %v has logging disabled.", [resource_name(name, resource)])
+}
+
+pitr_enabled(resource) if {
+    resource.Properties.PointInTimeRecoverySpecification.PointInTimeRecoveryEnabled == true
 }
 
 resource_name(name, resource) := value if {
