@@ -47,13 +47,15 @@ jobs:
 
       - name: OPA policy check
         run: |
+          set -euo pipefail
           opa eval --format=json \
             --data policy/ \
             --input cdk.out/DataProcessingInfrastructureStack.template.json \
             'data.policy' | tee opa-results.json
-          VIOLATIONS=$(jq '[.result[].expressions[].value | to_entries[].value[]] | length' opa-results.json)
+          VIOLATIONS=$(jq '[.result[].expressions[].value | .. | arrays | .[]] | length' opa-results.json)
           if [ "$VIOLATIONS" -gt 0 ]; then
-            echo "::warning::OPA policy violations: $VIOLATIONS"
+            echo "::error::OPA policy violations: $VIOLATIONS"
             jq -r '.result[].expressions[].value | to_entries[] | .value[]' opa-results.json
+            exit 1
           fi
           echo "OPA check complete. Violations: $VIOLATIONS"

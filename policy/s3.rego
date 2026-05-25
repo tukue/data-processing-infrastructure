@@ -12,8 +12,8 @@ deny_s3_no_encryption contains msg if {
 deny_s3_no_block_public_access contains msg if {
     some resource in input.Resources
     resource.Type == "AWS::S3::Bucket"
-    not resource.Properties.PublicAccessBlockConfiguration
-    msg := sprintf("S3 bucket %v does not have PublicAccessBlockConfiguration.", [resource.Properties.BucketName])
+    not public_access_blocked(resource)
+    msg := sprintf("S3 bucket %v does not block all public access.", [resource.Properties.BucketName])
 }
 
 deny_s3_bucket_acl_not_enforced contains msg if {
@@ -29,4 +29,12 @@ deny_s3_versioning_disabled contains msg if {
     resource.Type == "AWS::S3::Bucket"
     not resource.Properties.VersioningConfiguration
     msg := sprintf("S3 bucket %v does not have versioning enabled.", [resource.Properties.BucketName])
+}
+
+public_access_blocked(resource) if {
+    config := resource.Properties.PublicAccessBlockConfiguration
+    config.BlockPublicAcls
+    config.BlockPublicPolicy
+    config.IgnorePublicAcls
+    config.RestrictPublicBuckets
 }

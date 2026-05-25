@@ -18,6 +18,15 @@ deny_security_group_public_ingress contains msg if {
     msg := sprintf("Security group %v allows public ingress from 0.0.0.0/0.", [resource.Properties.GroupDescription])
 }
 
+deny_security_group_public_egress contains msg if {
+    some resource in input.Resources
+    resource.Type == "AWS::EC2::SecurityGroup"
+    resource.Properties.SecurityGroupEgress
+    rule := resource.Properties.SecurityGroupEgress[_]
+    rule.CidrIp == "0.0.0.0/0"
+    msg := sprintf("Security group %v allows public egress to 0.0.0.0/0.", [resource.Properties.GroupDescription])
+}
+
 deny_secrets_manager_no_encryption contains msg if {
     some resource in input.Resources
     resource.Type == "AWS::SecretsManager::Secret"
@@ -31,4 +40,34 @@ deny_ecs_task_definition_no_readonly_root contains msg if {
     def := resource.Properties.ContainerDefinitions[_]
     not def.ReadonlyRootFilesystem
     msg := sprintf("ECS container %v does not have readonlyRootFilesystem enabled.", [def.Name])
+}
+
+deny_ecs_task_definition_unpinned_image contains msg if {
+    some resource in input.Resources
+    resource.Type == "AWS::ECS::TaskDefinition"
+    def := resource.Properties.ContainerDefinitions[_]
+    not contains(def.Image, "@sha256:")
+    msg := sprintf("ECS container %v image is not pinned to a digest.", [def.Name])
+}
+
+deny_ecs_task_definition_privileged_mode contains msg if {
+    some resource in input.Resources
+    resource.Type == "AWS::ECS::TaskDefinition"
+    def := resource.Properties.ContainerDefinitions[_]
+    def.Privileged == true
+    msg := sprintf("ECS container %v runs in privileged mode.", [def.Name])
+}
+
+deny_ecs_task_definition_root_user contains msg if {
+    some resource in input.Resources
+    resource.Type == "AWS::ECS::TaskDefinition"
+    def := resource.Properties.ContainerDefinitions[_]
+    not non_root_user(def)
+    msg := sprintf("ECS container %v does not declare a non-root user.", [def.Name])
+}
+
+non_root_user(def) if {
+    def.User
+    def.User != "0"
+    def.User != "root"
 }
