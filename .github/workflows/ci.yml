@@ -38,3 +38,22 @@ jobs:
         env:
           CDK_DEFAULT_ACCOUNT: 000000000000
           CDK_DEFAULT_REGION: us-east-1
+
+      - name: Install OPA
+        run: |
+          curl -sL https://github.com/open-policy-agent/opa/releases/download/v1.3.0/opa_linux_amd64_static -o /usr/local/bin/opa
+          chmod 755 /usr/local/bin/opa
+          opa version
+
+      - name: OPA policy check
+        run: |
+          opa eval --format=json \
+            --data policy/ \
+            --input cdk.out/DataProcessingInfrastructureStack.template.json \
+            'data.policy' | tee opa-results.json
+          VIOLATIONS=$(jq '[.result[].expressions[].value | to_entries[].value[]] | length' opa-results.json)
+          if [ "$VIOLATIONS" -gt 0 ]; then
+            echo "::warning::OPA policy violations: $VIOLATIONS"
+            jq -r '.result[].expressions[].value | to_entries[] | .value[]' opa-results.json
+          fi
+          echo "OPA check complete. Violations: $VIOLATIONS"
