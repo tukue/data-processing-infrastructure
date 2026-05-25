@@ -8,16 +8,24 @@ The processor application itself is intentionally not implemented. The ECS task 
 
 ```mermaid
 flowchart LR
-    user[User or upstream system] --> raw[(Raw uploads S3 bucket)]
+    user[User or upstream system] --> raw[(Raw uploads S3 bucket<br/>KMS, TLS, versioning)]
     raw -->|Object Created via EventBridge notifications| rule[EventBridge rule]
+    raw -. server access logs .-> accessLogs[(Access log bucket<br/>KMS, TLS)]
     rule --> sfn[Step Functions state machine]
-    sfn -->|RunTask sync integration| ecs[ECS Fargate task]
+    sfn -->|RunTask sync integration| ecs[ECS Fargate task<br/>private subnets, no public IP<br/>read-only root FS, non-root user]
     ecs --> raw
-    ecs --> processed[(Processed files S3 bucket)]
-    ecs --> failed[(Failed files S3 bucket)]
-    ecs --> secrets[Secrets Manager]
-    ecs --> logs[CloudWatch Logs]
-    ecs --> kms[KMS key]
+    ecs --> processed[(Processed files S3 bucket<br/>KMS, Object Lock, versioning)]
+    ecs --> failed[(Failed files S3 bucket<br/>KMS, Object Lock, versioning)]
+    ecs --> secrets[Secrets Manager<br/>KMS]
+    ecs --> logs[CloudWatch Logs<br/>KMS]
+    ecs --> vpc[Processing VPC<br/>private subnets]
+    vpc --> endpoints[Interface VPC endpoints<br/>Secrets Manager, Logs, ECR]
+    trail[CloudTrail S3 data events] --> cloudtrailBucket[(CloudTrail bucket<br/>KMS, TLS)]
+    raw --> kms[KMS keys<br/>storage, operational, secrets]
+    processed --> kms
+    failed --> kms
+    secrets --> kms
+    logs --> kms
     sfn --> jobs[(DynamoDB job table)]
     rule -. retry after failed workflow start .-> retry[(RetryQueue)]
     macie[Amazon Macie] --> logs
