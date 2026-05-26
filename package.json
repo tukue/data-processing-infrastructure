@@ -1,11 +1,38 @@
 {
   "name": "data-processing-infrastructure",
-  "version": "0.2.0",
+  "version": "0.3.0",
+  "description": "Production-oriented AWS CDK infrastructure for event-driven CSV processing with Step Functions, Fargate, and comprehensive security controls.",
+  "keywords": [
+    "aws",
+    "cdk",
+    "infrastructure-as-code",
+    "step-functions",
+    "ecs-fargate",
+    "event-driven",
+    "csv-processing",
+    "opentelemetry",
+    "opa-policies",
+    "cloud-security",
+    "iac"
+  ],
+  "homepage": "https://github.com/tukue/data-processing-infrastructure#readme",
+  "bugs": {
+    "url": "https://github.com/tukue/data-processing-infrastructure/issues"
+  },
+  "license": "MIT",
+  "author": "Data Processing Infrastructure contributors",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tukue/data-processing-infrastructure.git"
+  },
   "scripts": {
     "build": "tsc",
     "watch": "tsc -w",
     "test": "jest",
-    "cdk": "cdk"
+    "cdk": "cdk",
+    "synth": "npx cdk synth",
+    "synth:nag": "CDK_NAG=1 npx cdk synth",
+    "clean": "rm -rf lib/*.js lib/*.d.ts bin/*.js bin/*.d.ts test/*.js test/*.d.ts cdk.out*"
   },
   "devDependencies": {
     "@types/jest": "^30",
