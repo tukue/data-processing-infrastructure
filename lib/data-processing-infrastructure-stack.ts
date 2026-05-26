@@ -7,6 +7,7 @@ import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as kms from 'aws-cdk-lib/aws-kms';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as macie from 'aws-cdk-lib/aws-macie';
 import * as s3 from 'aws-cdk-lib/aws-s3';
@@ -24,11 +25,32 @@ export interface DataProcessingInfrastructureStackProps extends cdk.StackProps {
   failedFileRetentionDays: number;
   enrichmentApiCidrs: string[];
   jobRetentionDays: number;
+  processorCpu: number;
+  processorMemory: number;
+  logRetentionDays: number;
+}
+
+function cdkLogRetention(days: number): logs.RetentionDays {
+  if (days <= 1) return logs.RetentionDays.ONE_DAY;
+  if (days <= 3) return logs.RetentionDays.THREE_DAYS;
+  if (days <= 5) return logs.RetentionDays.FIVE_DAYS;
+  if (days <= 7) return logs.RetentionDays.ONE_WEEK;
+  if (days <= 14) return logs.RetentionDays.TWO_WEEKS;
+  if (days <= 30) return logs.RetentionDays.ONE_MONTH;
+  if (days <= 60) return logs.RetentionDays.TWO_MONTHS;
+  if (days <= 90) return logs.RetentionDays.THREE_MONTHS;
+  if (days <= 180) return logs.RetentionDays.SIX_MONTHS;
+  if (days <= 365) return logs.RetentionDays.ONE_YEAR;
+  if (days <= 545) return logs.RetentionDays.THIRTEEN_MONTHS;
+  if (days <= 730) return logs.RetentionDays.EIGHTEEN_MONTHS;
+  return logs.RetentionDays.TWO_YEARS;
 }
 
 export class DataProcessingInfrastructureStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: DataProcessingInfrastructureStackProps) {
     super(scope, id, props);
+
+    const logRetention = cdkLogRetention(props.logRetentionDays);
 
     const storageKey = new kms.Key(this, 'StorageKey', {
       alias: 'alias/data-processing-storage',
@@ -139,6 +161,7 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
       pointInTimeRecoverySpecification: {
         pointInTimeRecoveryEnabled: true,
       },
+      timeToLiveAttribute: 'Ttl',
       removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
 
@@ -174,11 +197,12 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
       },
     });
 
-    // Tasks run in private subnets. NAT is included because the placeholder public
-    // image and external enrichment API need outbound HTTPS access.
+    const hasEnrichmentCidrs = props.enrichmentApiCidrs.length > 0;
+    const natGateways = hasEnrichmentCidrs ? 1 : 0;
+
     const vpc = new ec2.Vpc(this, 'ProcessingVpc', {
       maxAzs: 3,
-      natGateways: 1,
+      natGateways,
       subnetConfiguration: [
         {
           name: 'Public',
@@ -230,6 +254,12 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
       securityGroups: [vpcEndpointSecurityGroup],
       privateDnsEnabled: true,
     });
+    vpc.addInterfaceEndpoint('SqsEndpoint', {
+      service: ec2.InterfaceVpcEndpointAwsService.SQS,
+      subnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+      securityGroups: [vpcEndpointSecurityGroup],
+      privateDnsEnabled: true,
+    });
 
     const taskSecurityGroup = new ec2.SecurityGroup(this, 'ProcessorTaskSecurityGroup', {
       vpc,
@@ -250,7 +280,7 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
     taskSecurityGroup.addEgressRule(
       ec2.Peer.ipv4(vpc.vpcCidrBlock),
       ec2.Port.tcp(443),
-      'Allow HTTPS to VPC CIDR for interface endpoint traffic (Secrets Manager, CloudWatch, ECR).',
+      'Allow HTTPS to VPC CIDR for interface endpoint traffic (Secrets Manager, CloudWatch, ECR, SQS).',
     );
     for (const cidr of props.enrichmentApiCidrs) {
       taskSecurityGroup.addEgressRule(
@@ -264,9 +294,9 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
       vpc,
     });
 
-    const logGroup = new logs.LogGroup(this, 'ProcessorLogGroup', {
+    const processorLogGroup = new logs.LogGroup(this, 'ProcessorLogGroup', {
       encryptionKey: operationalKey,
-      retention: logs.RetentionDays.ONE_MONTH,
+      retention: logRetention,
       removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
 
@@ -277,7 +307,7 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
 
     const macieFindingsLogGroup = new logs.LogGroup(this, 'MacieFindingsLogGroup', {
       encryptionKey: operationalKey,
-      retention: logs.RetentionDays.ONE_MONTH,
+      retention: logRetention,
       removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
 
@@ -301,15 +331,15 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
     macieFindingsRule.node.addDependency(macieSession);
 
     const taskDefinition = new ecs.FargateTaskDefinition(this, 'ProcessorTaskDefinition', {
-      cpu: 1024,
-      memoryLimitMiB: 2048,
+      cpu: props.processorCpu,
+      memoryLimitMiB: props.processorMemory,
     });
 
     const container = taskDefinition.addContainer('CsvProcessorContainer', {
       image: ecs.ContainerImage.fromRegistry(props.processorImage),
       logging: ecs.LogDrivers.awsLogs({
         streamPrefix: 'csv-processor',
-        logGroup,
+        logGroup: processorLogGroup,
       }),
       readonlyRootFilesystem: true,
       user: '65534:65534',
@@ -318,13 +348,9 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
     container.addEnvironment('PROCESSED_BUCKET', processedFilesBucket.bucketName);
     container.addEnvironment('FAILED_BUCKET', failedFilesBucket.bucketName);
 
-    // Secrets are injected by the ECS agent at task start, not stored in the
-    // task definition or passed as plain-text environment variables.
     container.addSecret('DATABASE_CREDENTIALS', ecs.Secret.fromSecretsManager(databaseCredentials));
     container.addSecret('EXTERNAL_API_CREDENTIALS', ecs.Secret.fromSecretsManager(externalApiKey));
 
-    // Grant ECR pull permissions so the ECS agent can authenticate and pull
-    // the processor image from ECR at task startup.
     taskDefinition.executionRole?.addToPrincipalPolicy(new iam.PolicyStatement({
       actions: [
         'ecr:GetAuthorizationToken',
@@ -335,14 +361,10 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
       resources: ['*'],
     }));
 
-    // Least-privilege intent: the task can read only new raw inputs and write
-    // outputs/failures. Secrets are retrieved by the ECS execution role.
     rawUploadsBucket.grantRead(taskDefinition.taskRole);
     processedFilesBucket.grantWrite(taskDefinition.taskRole);
     failedFilesBucket.grantWrite(taskDefinition.taskRole);
 
-    // Deny object access to any principal other than the task role.
-    // Scoped to object resources so CloudFormation can still manage bucket properties.
     const denyNonTaskRoleAccess = (bucket: s3.Bucket, actions: string[]) =>
       bucket.addToResourcePolicy(
         new iam.PolicyStatement({
@@ -394,7 +416,21 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
       resultPath: '$.taskResult',
     });
 
-    const injectTtl = new sfn.Pass(this, 'InjectTtl', {
+    const ttlFunction = new lambda.Function(this, 'CalculateTtlFunction', {
+      runtime: lambda.Runtime.NODEJS_22_X,
+      handler: 'index.handler',
+      code: lambda.Code.fromInline(
+        'exports.handler = async () => ({ Ttl: Math.floor(Date.now() / 1000) + ' +
+        String(props.jobRetentionDays) + ' * 86400 });',
+      ),
+    });
+
+    const calculateTtl = new tasks.LambdaInvoke(this, 'CalculateTtl', {
+      lambdaFunction: ttlFunction,
+      resultPath: '$.ttl',
+    });
+
+    const injectDetail = new sfn.Pass(this, 'InjectDetail', {
       parameters: {
         'detail.$': '$.detail',
       },
@@ -417,7 +453,7 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
         ObjectKey: tasks.DynamoAttributeValue.fromString(sfn.JsonPath.stringAt('$.detail.object.key')),
         ObjectSizeBytes: tasks.DynamoAttributeValue.numberFromString(sfn.JsonPath.stringAt('$.detail.object.size')),
         StartedAt: tasks.DynamoAttributeValue.fromString(sfn.JsonPath.stringAt('$$.State.EnteredTime')),
-        RetentionDays: tasks.DynamoAttributeValue.numberFromString(String(props.jobRetentionDays)),
+        Ttl: tasks.DynamoAttributeValue.numberFromString(sfn.JsonPath.stringAt('$.ttl.Ttl')),
       },
       resultPath: sfn.JsonPath.DISCARD,
     });
@@ -467,7 +503,8 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
 
     markJobFailed.next(failWorkflow);
 
-    const definition = injectTtl
+    const definition = calculateTtl
+      .next(injectDetail)
       .next(markJobStarted)
       .next(
         runProcessorTask
@@ -489,7 +526,7 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
 
     const stateMachineLogGroup = new logs.LogGroup(this, 'StateMachineLogGroup', {
       encryptionKey: operationalKey,
-      retention: logs.RetentionDays.ONE_MONTH,
+      retention: logRetention,
       removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
 
@@ -550,7 +587,7 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
 
     const cloudTrailLogGroup = new logs.LogGroup(this, 'CloudTrailLogGroup', {
       encryptionKey: operationalKey,
-      retention: logs.RetentionDays.ONE_MONTH,
+      retention: logRetention,
       removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
 
