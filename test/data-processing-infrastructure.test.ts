@@ -286,7 +286,7 @@ test('requires a processor image', () => {
   );
 });
 
-test('DynamoDB table is created without TTL', () => {
+test('DynamoDB table has TTL configured with TimeToLive attribute', () => {
   const app = new cdk.App();
   const stack = new DataProcessingInfrastructure.DataProcessingInfrastructureStack(app, 'TtlTestStack', defaultProps);
   const template = Template.fromStack(stack);
@@ -296,6 +296,10 @@ test('DynamoDB table is created without TTL', () => {
       PointInTimeRecoveryEnabled: true,
     },
     BillingMode: 'PAY_PER_REQUEST',
+    TimeToLiveSpecification: {
+      AttributeName: 'Ttl',
+      Enabled: true,
+    },
   });
 });
 
@@ -336,7 +340,7 @@ test('rejects invalid job retention days', () => {
   process.env = prevEnv;
 });
 
-test('enables DynamoDB TTL for auto-cleanup of job records', () => {
+test('populates Ttl attribute in job records via Lambda', () => {
   const app = new cdk.App();
   const stack = new DataProcessingInfrastructure.DataProcessingInfrastructureStack(app, 'TtlFeatureTest', defaultProps);
   const template = Template.fromStack(stack);
@@ -347,6 +351,18 @@ test('enables DynamoDB TTL for auto-cleanup of job records', () => {
       Enabled: true,
     },
   });
+
+  const functions = template.findResources('AWS::Lambda::Function');
+  const ttlFunction = Object.values(functions).filter(
+    (fn: any) => JSON.stringify(fn).includes('CalculateTtl'),
+  );
+  expect(ttlFunction.length).toBeGreaterThanOrEqual(1);
+
+  const synthesized = JSON.stringify(template.toJSON());
+  expect(synthesized).toContain('"Ttl"');
+  expect(synthesized).toContain('Math.floor');
+  expect(synthesized).toContain('Date.now');
+  expect(synthesized).toContain('$.ttl.Ttl');
 });
 
 test('disables NAT Gateway when no enrichment API CIDRs are configured', () => {

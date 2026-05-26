@@ -7,6 +7,7 @@ import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as kms from 'aws-cdk-lib/aws-kms';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as macie from 'aws-cdk-lib/aws-macie';
 import * as s3 from 'aws-cdk-lib/aws-s3';
@@ -415,7 +416,21 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
       resultPath: '$.taskResult',
     });
 
-    const injectTtl = new sfn.Pass(this, 'InjectTtl', {
+    const ttlFunction = new lambda.Function(this, 'CalculateTtlFunction', {
+      runtime: lambda.Runtime.NODEJS_22_X,
+      handler: 'index.handler',
+      code: lambda.Code.fromInline(
+        'exports.handler = async () => ({ Ttl: Math.floor(Date.now() / 1000) + ' +
+        String(props.jobRetentionDays) + ' * 86400 });',
+      ),
+    });
+
+    const calculateTtl = new tasks.LambdaInvoke(this, 'CalculateTtl', {
+      lambdaFunction: ttlFunction,
+      resultPath: '$.ttl',
+    });
+
+    const injectDetail = new sfn.Pass(this, 'InjectDetail', {
       parameters: {
         'detail.$': '$.detail',
       },
@@ -438,6 +453,7 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
         ObjectKey: tasks.DynamoAttributeValue.fromString(sfn.JsonPath.stringAt('$.detail.object.key')),
         ObjectSizeBytes: tasks.DynamoAttributeValue.numberFromString(sfn.JsonPath.stringAt('$.detail.object.size')),
         StartedAt: tasks.DynamoAttributeValue.fromString(sfn.JsonPath.stringAt('$$.State.EnteredTime')),
+        Ttl: tasks.DynamoAttributeValue.numberFromString(sfn.JsonPath.stringAt('$.ttl.Ttl')),
       },
       resultPath: sfn.JsonPath.DISCARD,
     });
@@ -487,7 +503,8 @@ export class DataProcessingInfrastructureStack extends cdk.Stack {
 
     markJobFailed.next(failWorkflow);
 
-    const definition = injectTtl
+    const definition = calculateTtl
+      .next(injectDetail)
       .next(markJobStarted)
       .next(
         runProcessorTask

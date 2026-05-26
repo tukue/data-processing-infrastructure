@@ -19,3 +19,4 @@ coverage/
 .env.*
 *.log
 npm-debug.log*
+.idea/
